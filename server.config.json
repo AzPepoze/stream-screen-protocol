@@ -1,0 +1,24 @@
+{
+	"bind_host": "0.0.0.0",
+	"client_host": "127.0.0.1",
+	"port": 7700,
+	"codec": "h264",
+	"rgba_codec_config": {
+		"tile_size": 10
+	},
+	"h264_codec_config": {
+		"bitrate": 8000,
+		"preset": "ultrafast",
+		"tune": "zerolatency"
+	},
+	"capture": {
+		"backend": "auto",
+		"fps": 100,
+		"width": 1920,
+		"height": 1080,
+		"source": "default",
+		"cursor_mode": "embedded",
+		"source_type": "monitor"
+	},
+	"stats_interval_ms": 1000
+}

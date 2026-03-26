@@ -1,0 +1,23 @@
+{
+	"server_host": "127.0.0.1",
+	"port": 7700,
+	"window": {
+		"title": "StreamScreen Client",
+		"width": 1280,
+		"height": 720,
+		"fullscreen": false
+	},
+	"stats": {
+		"debug": true,
+		"font_size": 16,
+		"update_interval_ms": 500
+	},
+	"network": {
+		"max_latency_ms": 200,
+		"nack_retry_ms": 20,
+		"partial_frame_ready": 0.98,
+		"allow_partial_frames": true,
+		"force_output_partial": true,
+		"auto_tune_by_fps": true
+	}
+}
