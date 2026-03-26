@@ -45,10 +45,11 @@ type ServerConfig struct {
 }
 
 type ClientConfig struct {
-	ServerHost string `json:"server_host"`
-	Port       int    `json:"port"`
-	FPS        int    `json:"fps"`
-	Window     struct {
+	ServerHost  string                 `json:"server_host"`
+	Port        int                    `json:"port"`
+	FPS         int                    `json:"fps"`
+	CodecConfig map[string]interface{} `json:"codec_config"`
+	Window      struct {
 		Title      string `json:"title"`
 		Width      int    `json:"width"`
 		Height     int    `json:"height"`
@@ -147,6 +148,12 @@ func (c ServerConfig) Validate() error {
 	if c.StatsIntervalMS <= 0 {
 		return errors.New("stats_interval_ms must be greater than 0")
 	}
+	if err := validateH264BackendValue(c.CodecConfig, "h264_encoder_backend"); err != nil {
+		return err
+	}
+	if err := validateH264BackendValue(c.CodecConfig, "h264_decoder_backend"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -175,7 +182,30 @@ func (c ClientConfig) Validate() error {
 	if c.Network.PartialFrameReady <= 0 || c.Network.PartialFrameReady > 1 {
 		return errors.New("network.partial_frame_ready must be in (0, 1]")
 	}
+	if err := validateH264BackendValue(c.CodecConfig, "h264_decoder_backend"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateH264BackendValue(cfg map[string]interface{}, key string) error {
+	if cfg == nil {
+		return nil
+	}
+	raw, ok := cfg[key]
+	if !ok {
+		return nil
+	}
+	v, ok := raw.(string)
+	if !ok {
+		return fmt.Errorf("%s must be a string", key)
+	}
+	switch v {
+	case "", "auto", "gstreamer", "ffmpeg":
+		return nil
+	default:
+		return fmt.Errorf("%s must be one of auto, gstreamer, ffmpeg", key)
+	}
 }
 
 func (c ServerConfig) EffectiveBackend() (CaptureBackend, error) {
@@ -234,6 +264,9 @@ type clientConfigCompat struct {
 }
 
 func applyClientCompat(cfg *ClientConfig, compat clientConfigCompat) {
+	if cfg.CodecConfig == nil {
+		cfg.CodecConfig = make(map[string]interface{})
+	}
 	if cfg.Stats.FontSize <= 0 {
 		cfg.Stats.FontSize = 16
 	}

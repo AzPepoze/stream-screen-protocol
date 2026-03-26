@@ -11,7 +11,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 
 	"streamscreen/internal/config"
-	"streamscreen/internal/stream/client"
+	"streamscreen/internal/video/stream/client"
 )
 
 type streamState string

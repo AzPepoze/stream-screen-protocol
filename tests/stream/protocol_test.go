@@ -3,7 +3,7 @@ package stream_test
 import (
 	"testing"
 
-	s "streamscreen/internal/stream"
+	s "streamscreen/internal/video/stream"
 )
 
 func TestMarshalUnmarshalJoin(t *testing.T) {
