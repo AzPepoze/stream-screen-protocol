@@ -3,6 +3,7 @@ package client
 import (
 	"log"
 	"sort"
+	"sync/atomic"
 	"time"
 )
 
@@ -138,6 +139,7 @@ func (r *ClientReceiver) enqueueAudioPayload(payload []byte) {
 
 	select {
 	case <-r.audioFrames:
+		atomic.AddUint64(&r.ccAudioDrops, 1)
 	default:
 	}
 
@@ -145,5 +147,6 @@ func (r *ClientReceiver) enqueueAudioPayload(payload []byte) {
 	case r.audioFrames <- packet:
 	default:
 		log.Printf("Client: audio queue full, dropping packet")
+		atomic.AddUint64(&r.ccAudioDrops, 1)
 	}
 }

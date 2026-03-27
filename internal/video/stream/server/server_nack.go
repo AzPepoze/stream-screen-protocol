@@ -95,6 +95,14 @@ func (s *Sender) listenForNACKs() {
 				} else {
 					log.Printf("Server: failed to parse TileRequest: %v", err)
 				}
+			case stream.CSPPacketTypeControl:
+				s.setDestinationAndSeen(addr)
+				feedback, err := stream.UnmarshalControlFeedback(buf[:n])
+				if err != nil {
+					log.Printf("Server: failed to parse control feedback from %s: %v", addr.String(), err)
+					continue
+				}
+				s.applyControlFeedback(feedback)
 			}
 
 			if h.PacketType == stream.CSPPacketTypeNACK {

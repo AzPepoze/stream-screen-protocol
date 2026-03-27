@@ -59,6 +59,9 @@ type ClientReceiver struct {
 	audioFrames   chan []byte
 	audioFragMu   sync.Mutex
 	audioFragBuf  map[uint32]*audioFragmentBuffer
+	ccFrameDrops  uint64
+	ccAudioDrops  uint64
+	ccNACKSent    uint64
 }
 
 type audioFragmentBuffer struct {
@@ -122,6 +125,7 @@ func (r *ClientReceiver) Start() error {
 	go r.receiveLoop()
 	go r.nackLoop()
 	go r.joinLoop()
+	go r.controlLoop()
 
 	log.Printf("Client: Start() waiting for server VideoInfo (timeout=30s)")
 	deadline := time.Now().Add(30 * time.Second)

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"time"
 
 	"streamscreen/internal/audio/capture"
 	"streamscreen/internal/audio/opus"
@@ -91,6 +92,9 @@ func (s *Sender) StartAudio() error {
 					copy(buf[stream.CSPHeaderSize:], payload)
 
 					_, _ = s.conn.WriteToUDP(buf, destAddr)
+					if gap := s.audioPacketGap(); gap > 0 {
+						time.Sleep(gap)
+					}
 				}
 			}
 		}

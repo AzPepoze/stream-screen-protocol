@@ -4,6 +4,7 @@ import (
 	"log"
 	"net"
 	"streamscreen/internal/video/stream"
+	"time"
 )
 
 // TileGetter is an interface for getting tile data
@@ -30,6 +31,11 @@ func NewServerPipeline(tileBuffer TileGetter, cfg map[string]interface{}) *Serve
 
 // SendTilesBurst sends all tiles in a single burst with per-tile fragmentation tracking
 func (p *ServerPipeline) SendTilesBurst(frameSeq uint32, tileIDs []uint16, conn *net.UDPConn, destAddr *net.UDPAddr) error {
+	return p.SendTilesBurstWithPacing(frameSeq, tileIDs, conn, destAddr, 0)
+}
+
+// SendTilesBurstWithPacing sends RGBA tile packets with optional per-packet pacing.
+func (p *ServerPipeline) SendTilesBurstWithPacing(frameSeq uint32, tileIDs []uint16, conn *net.UDPConn, destAddr *net.UDPAddr, packetGap time.Duration) error {
 	if len(tileIDs) == 0 {
 		return nil
 	}
@@ -81,6 +87,9 @@ func (p *ServerPipeline) SendTilesBurst(frameSeq uint32, tileIDs []uint16, conn 
 				log.Printf("[rgba-server] tile write error frame=%d tile=%d dest=%s err=%v",
 					frameSeq, tileID, destAddr.String(), err)
 				return err
+			}
+			if packetGap > 0 {
+				time.Sleep(packetGap)
 			}
 			sentCount++
 

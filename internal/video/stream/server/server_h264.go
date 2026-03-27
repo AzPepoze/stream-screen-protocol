@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"time"
 
 	videoh264 "streamscreen/internal/video/codec/h264"
 	"streamscreen/internal/video/stream"
@@ -45,6 +46,7 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 
 	s.frameSeq++
 	totalPackets := uint32((len(encodedData) + stream.CSPMaxPayloadSize - 1) / stream.CSPMaxPayloadSize)
+	packetGap := s.videoPacketGap()
 	for packetID := uint32(0); packetID < totalPackets; packetID++ {
 		start := packetID * stream.CSPMaxPayloadSize
 		end := start + stream.CSPMaxPayloadSize
@@ -67,6 +69,9 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 		s.buffer.Put(s.frameSeq, packetID, buf)
 		if _, err := s.conn.WriteToUDP(buf, destAddr); err != nil {
 			return err
+		}
+		if packetGap > 0 {
+			time.Sleep(packetGap)
 		}
 	}
 

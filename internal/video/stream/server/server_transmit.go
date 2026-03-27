@@ -2,6 +2,7 @@ package server
 
 import (
 	"log"
+	"time"
 
 	"streamscreen/internal/video/stream"
 )
@@ -53,12 +54,16 @@ func (s *Sender) transmitFrame(data []byte) {
 
 	// Burst send all packets with minimal delay
 	sentCount := 0
+	packetGap := s.videoPacketGap()
 	for _, packet := range packets {
 		_, err := s.conn.WriteToUDP(packet, dest)
 		if err != nil {
 			log.Printf("Server: write error frame=%d dest=%s err=%v", s.frameSeq, dest.String(), err)
 		} else {
 			sentCount++
+		}
+		if packetGap > 0 {
+			time.Sleep(packetGap)
 		}
 	}
 }

@@ -35,6 +35,10 @@ type Sender struct {
 	rgbaPipeline      *rgba.ServerPipeline
 	h264Pipeline      *videoh264.ServerPipeline
 	audioCancel       context.CancelFunc
+	ccMu              sync.RWMutex
+	ccVideoGap        time.Duration
+	ccAudioGap        time.Duration
+	ccLastLogAt       time.Time
 }
 
 func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
@@ -124,7 +128,7 @@ func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
 			destAddr := s.activeDestination()
 			if destAddr != nil {
 				s.frameSeq++
-				s.rgbaPipeline.SendTilesBurst(s.frameSeq, tilesToSend, s.conn, destAddr)
+				s.rgbaPipeline.SendTilesBurstWithPacing(s.frameSeq, tilesToSend, s.conn, destAddr, s.videoPacketGap())
 			}
 		}
 	} else if s.codecName == "h264" {
@@ -144,7 +148,7 @@ func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
 			destAddr := s.activeDestination()
 			if destAddr != nil {
 				s.frameSeq++
-				s.rgbaPipeline.SendTilesBurst(s.frameSeq, tilesToSend, s.conn, destAddr)
+				s.rgbaPipeline.SendTilesBurstWithPacing(s.frameSeq, tilesToSend, s.conn, destAddr, s.videoPacketGap())
 			}
 		}
 	}

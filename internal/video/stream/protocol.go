@@ -65,6 +65,16 @@ type NACKPayload struct {
 	PacketIDs []uint32
 }
 
+// ControlFeedback is lightweight congestion feedback sent from client to server.
+// queue values are percentages in [0,100].
+type ControlFeedback struct {
+	FrameQueuePercent uint8
+	AudioQueuePercent uint8
+	FrameDrops        uint32
+	AudioDrops        uint32
+	NACKSent          uint32
+}
+
 // MarshalNACK serializes a NACK request.
 func MarshalNACK(frameSeq uint32, packetIDs []uint32) []byte {
 	buf := make([]byte, CSPHeaderSize+4+len(packetIDs)*4)
@@ -99,6 +109,48 @@ func UnmarshalNACK(buf []byte) (uint32, []uint32, error) {
 		ids[i] = binary.BigEndian.Uint32(buf[CSPHeaderSize+4+i*4 : CSPHeaderSize+4+(i+1)*4])
 	}
 	return h.FrameSeq, ids, nil
+}
+
+// MarshalControlFeedback serializes client congestion feedback.
+func MarshalControlFeedback(f ControlFeedback) []byte {
+	buf := make([]byte, CSPHeaderSize+16)
+	h := PacketHeader{
+		Version:    CSPVersion,
+		PacketType: CSPPacketTypeControl,
+	}
+	h.Marshal(buf[:CSPHeaderSize])
+	buf[CSPHeaderSize] = 1 // payload version
+	buf[CSPHeaderSize+1] = f.FrameQueuePercent
+	buf[CSPHeaderSize+2] = f.AudioQueuePercent
+	// buf[CSPHeaderSize+3] reserved
+	binary.BigEndian.PutUint32(buf[CSPHeaderSize+4:CSPHeaderSize+8], f.FrameDrops)
+	binary.BigEndian.PutUint32(buf[CSPHeaderSize+8:CSPHeaderSize+12], f.AudioDrops)
+	binary.BigEndian.PutUint32(buf[CSPHeaderSize+12:CSPHeaderSize+16], f.NACKSent)
+	return buf
+}
+
+// UnmarshalControlFeedback deserializes client congestion feedback.
+func UnmarshalControlFeedback(buf []byte) (ControlFeedback, error) {
+	if len(buf) < CSPHeaderSize+16 {
+		return ControlFeedback{}, fmt.Errorf("buffer too small for control feedback: %d", len(buf))
+	}
+	var h PacketHeader
+	if err := h.Unmarshal(buf[:CSPHeaderSize]); err != nil {
+		return ControlFeedback{}, err
+	}
+	if h.PacketType != CSPPacketTypeControl {
+		return ControlFeedback{}, fmt.Errorf("not a control packet")
+	}
+	if buf[CSPHeaderSize] != 1 {
+		return ControlFeedback{}, fmt.Errorf("unsupported control payload version: %d", buf[CSPHeaderSize])
+	}
+	return ControlFeedback{
+		FrameQueuePercent: buf[CSPHeaderSize+1],
+		AudioQueuePercent: buf[CSPHeaderSize+2],
+		FrameDrops:        binary.BigEndian.Uint32(buf[CSPHeaderSize+4 : CSPHeaderSize+8]),
+		AudioDrops:        binary.BigEndian.Uint32(buf[CSPHeaderSize+8 : CSPHeaderSize+12]),
+		NACKSent:          binary.BigEndian.Uint32(buf[CSPHeaderSize+12 : CSPHeaderSize+16]),
+	}, nil
 }
 
 // MarshalJoin serializes a JOIN packet with an optional endpoint payload.

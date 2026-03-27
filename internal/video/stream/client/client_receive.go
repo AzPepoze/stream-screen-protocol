@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"streamscreen/internal/video/stream"
+	"sync/atomic"
 	"time"
 )
 
@@ -99,6 +100,7 @@ func (r *ClientReceiver) enqueueFrameLatest(f assembledFrame) {
 	// Queue full: drop one stale frame then push the latest frame.
 	select {
 	case <-r.frameChan:
+		atomic.AddUint64(&r.ccFrameDrops, 1)
 	default:
 	}
 
@@ -107,6 +109,7 @@ func (r *ClientReceiver) enqueueFrameLatest(f assembledFrame) {
 	case r.frameChan <- f:
 	default:
 		log.Printf("frame channel full, dropping frame=%d", f.Seq)
+		atomic.AddUint64(&r.ccFrameDrops, 1)
 	}
 }
 
@@ -145,8 +148,44 @@ func (r *ClientReceiver) nackLoop() {
 		case req := <-r.jitterBuffer.nackChan:
 			packet := stream.MarshalNACK(req.FrameSeq, req.PacketIDs)
 			_, _ = r.conn.WriteToUDP(packet, r.serverAddr)
+			atomic.AddUint64(&r.ccNACKSent, 1)
 		}
 	}
+}
+
+func (r *ClientReceiver) controlLoop() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-ticker.C:
+			packet := stream.MarshalControlFeedback(stream.ControlFeedback{
+				FrameQueuePercent: queuePercent(len(r.frameChan), cap(r.frameChan)),
+				AudioQueuePercent: queuePercent(len(r.audioFrames), cap(r.audioFrames)),
+				FrameDrops:        uint32(atomic.SwapUint64(&r.ccFrameDrops, 0)),
+				AudioDrops:        uint32(atomic.SwapUint64(&r.ccAudioDrops, 0)),
+				NACKSent:          uint32(atomic.SwapUint64(&r.ccNACKSent, 0)),
+			})
+			_, _ = r.conn.WriteToUDP(packet, r.serverAddr)
+		}
+	}
+}
+
+func queuePercent(length, capacity int) uint8 {
+	if capacity <= 0 {
+		return 0
+	}
+	p := (length * 100) / capacity
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return uint8(p)
 }
 
 func (r *ClientReceiver) appsrcLoop() {
