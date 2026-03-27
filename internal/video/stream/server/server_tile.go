@@ -22,7 +22,6 @@ type TileBuffer struct {
 	tileHashes     []uint32 // CRC32 hash of current tiles
 	prevHashes     []uint32 // CRC32 hash of previous tiles
 	lastUpdateAt   time.Time
-	forceAllAt     time.Time       // Timer to force-send all tiles
 	requestedTiles map[uint16]bool // Tiles client requested
 	requestedMu    sync.Mutex
 	mu             sync.RWMutex
@@ -46,7 +45,6 @@ func NewTileBuffer(gridSize, width, height int) *TileBuffer {
 		tileHashes:     make([]uint32, tileCount),
 		prevHashes:     make([]uint32, tileCount),
 		lastUpdateAt:   time.Now(),
-		forceAllAt:     time.Now().Add(2 * time.Second),
 		requestedTiles: make(map[uint16]bool),
 	}
 }
@@ -114,18 +112,7 @@ func (tb *TileBuffer) UpdateTiles(rgbaData []byte) []uint16 {
 		}
 	}
 
-	// Check for timeout - force send all tiles every 2 seconds
-	now := time.Now()
-	if now.After(tb.forceAllAt) {
-		tb.forceAllAt = now.Add(2 * time.Second)
-		// Clear changed list and mark ALL tiles as changed
-		changed = make([]uint16, tb.tileCount)
-		for i := 0; i < tb.tileCount; i++ {
-			changed[i] = uint16(i)
-		}
-	}
-
-	tb.lastUpdateAt = now
+	tb.lastUpdateAt = time.Now()
 	return changed
 }
 

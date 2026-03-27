@@ -10,7 +10,7 @@
 		"source": "default",
 		"cursor_mode": "embedded",
 		"source_type": "monitor",
-		"codec": "h264",
+		"codec": "rgba",
 		"rgba_codec_config": {
 			"tile_size": 10
 		},

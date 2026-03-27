@@ -90,7 +90,7 @@ func (tg *TileGrid) SetTile(tileID uint16, pixelData []byte, frameBuffer []byte)
 	tg.tileRecvTime[tileID] = time.Now()
 }
 
-// GetStaleeTiles returns tile IDs that haven't been updated for more than timeout
+// GetStaleTiles returns tile IDs that haven't been updated for more than timeout
 // Excludes tiles that were recently requested (debounce)
 func (tg *TileGrid) GetStaleTiles(timeout time.Duration, requestDebounce time.Duration) []uint16 {
 	tg.mu.RLock()
@@ -146,4 +146,12 @@ func (tg *TileGrid) CountRecentTiles(duration time.Duration) int {
 	}
 
 	return count
+}
+
+// GetTileCount returns the total number of tiles in the grid
+func (tg *TileGrid) GetTileCount() int {
+	tg.mu.RLock()
+	defer tg.mu.RUnlock()
+
+	return tg.tileCount
 }
