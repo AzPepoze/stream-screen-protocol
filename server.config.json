@@ -12,7 +12,7 @@
 		"source_type": "monitor",
 		"codec": "rgba",
 		"rgba_codec_config": {
-			"tile_size": 10
+			"tile_size": 20
 		},
 		"h264_codec_config": {
 			"bitrate": 8000,
