@@ -11,10 +11,12 @@ func TestServerAudioDefaultsApplied(t *testing.T) {
 	cfg.Capture.FPS = 60
 	cfg.Capture.Width = 1920
 	cfg.Capture.Height = 1080
-	cfg.Video.Codec = "libx264"
-	cfg.Video.BitrateKbps = 5000
-	cfg.Video.Preset = "ultrafast"
-	cfg.Video.Tune = "zerolatency"
+	cfg.Capture.Codec = "h264"
+	cfg.Capture.H264CodecConfig = map[string]interface{}{
+		"bitrate": 5000,
+		"preset":  "ultrafast",
+		"tune":    "zerolatency",
+	}
 	cfg.StatsIntervalMS = 1000
 
 	applyServerCompat(&cfg, serverConfigCompat{})
@@ -35,10 +37,12 @@ func TestServerValidateAudioEnabled(t *testing.T) {
 	cfg.Capture.FPS = 60
 	cfg.Capture.Width = 1920
 	cfg.Capture.Height = 1080
-	cfg.Video.Codec = "libx264"
-	cfg.Video.BitrateKbps = 5000
-	cfg.Video.Preset = "ultrafast"
-	cfg.Video.Tune = "zerolatency"
+	cfg.Capture.Codec = "h264"
+	cfg.Capture.H264CodecConfig = map[string]interface{}{
+		"bitrate": 5000,
+		"preset":  "ultrafast",
+		"tune":    "zerolatency",
+	}
 	cfg.StatsIntervalMS = 1000
 	cfg.Audio.Enabled = true
 	cfg.Audio.Codec = "opus"

@@ -38,7 +38,7 @@ func main() {
 	log.Printf("loaded server.config.json")
 	log.Printf("backend=%s", backend)
 	log.Printf("bind=%s:%d destination=%s:%d", cfg.BindHost, cfg.Port, destinationHost, cfg.Port)
-	log.Printf("stream codec=%s capture=%dx%d@%dfps", cfg.StreamCodec, cfg.Capture.Width, cfg.Capture.Height, cfg.Capture.FPS)
+	log.Printf("stream codec=%s capture=%dx%d@%dfps", cfg.Capture.Codec, cfg.Capture.Width, cfg.Capture.Height, cfg.Capture.FPS)
 	log.Printf("audio enabled=%t codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
 		cfg.Audio.Enabled, cfg.Audio.Codec, cfg.Audio.SampleRate, cfg.Audio.Channels, cfg.Audio.FrameMS, cfg.Audio.BitrateKbps)
 

@@ -1,46 +1,83 @@
+//go:build cgo
+
 package opus
 
 import (
+	"encoding/binary"
 	"fmt"
-	"io"
-	"os/exec"
+	"sync"
+
+	hropus "gopkg.in/hraban/opus.v2"
 
 	"streamscreen/internal/config"
 )
 
 type Encoder struct {
-	sampleRate  int
-	channels    int
-	frameMS     int
-	bitrateKbps int
+	sampleRate      int
+	channels        int
+	samplesPerFrame int
+	mu              sync.Mutex
+	enc             *hropus.Encoder
 }
 
 type Decoder struct {
 	sampleRate int
 	channels   int
+	mu         sync.Mutex
+	dec        *hropus.Decoder
 }
 
 func NewEncoder(cfg config.ServerConfig) (*Encoder, error) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return nil, fmt.Errorf("audio encoder requires ffmpeg in PATH: %w", err)
+	rate := cfg.Audio.SampleRate
+	if rate <= 0 {
+		rate = 48000
 	}
+	ch := cfg.Audio.Channels
+	if ch <= 0 {
+		ch = 2
+	}
+	frameMS := cfg.Audio.FrameMS
+	if frameMS <= 0 {
+		frameMS = 20
+	}
+	bitrateKbps := cfg.Audio.BitrateKbps
+	if bitrateKbps <= 0 {
+		bitrateKbps = 96
+	}
+
+	const opusAppAudio = hropus.Application(2049)
+	enc, err := hropus.NewEncoder(rate, ch, opusAppAudio)
+	if err != nil {
+		return nil, fmt.Errorf("audio encoder init failed: %w", err)
+	}
+	if err := enc.SetBitrate(bitrateKbps * 1000); err != nil {
+		return nil, fmt.Errorf("audio encoder bitrate failed: %w", err)
+	}
+
+	samplesPerFrame := (rate * frameMS) / 1000
+	if samplesPerFrame <= 0 {
+		samplesPerFrame = rate / 50
+	}
+
 	return &Encoder{
-		sampleRate:  cfg.Audio.SampleRate,
-		channels:    cfg.Audio.Channels,
-		frameMS:     cfg.Audio.FrameMS,
-		bitrateKbps: cfg.Audio.BitrateKbps,
+		sampleRate:      rate,
+		channels:        ch,
+		samplesPerFrame: samplesPerFrame,
+		enc:             enc,
 	}, nil
 }
 
-func NewDecoder(cfg config.ClientConfig) (*Decoder, error) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return nil, fmt.Errorf("audio decoder requires ffmpeg in PATH: %w", err)
+func NewDecoder(_ config.ClientConfig) (*Decoder, error) {
+	rate := 48000
+	ch := 2
+	dec, err := hropus.NewDecoder(rate, ch)
+	if err != nil {
+		return nil, fmt.Errorf("audio decoder init failed: %w", err)
 	}
-	sampleRate := 48000
-	channels := 2
 	return &Decoder{
-		sampleRate: sampleRate,
-		channels:   channels,
+		sampleRate: rate,
+		channels:   ch,
+		dec:        dec,
 	}, nil
 }
 
@@ -48,100 +85,97 @@ func (e *Encoder) EncodePCM(pcm []byte) ([]byte, error) {
 	if len(pcm) == 0 {
 		return nil, fmt.Errorf("audio encoder: empty pcm")
 	}
-	args := []string{
-		"-hide_banner",
-		"-nostdin",
-		"-loglevel", "error",
-		"-f", "s16le",
-		"-ar", fmt.Sprintf("%d", e.sampleRate),
-		"-ac", fmt.Sprintf("%d", e.channels),
-		"-i", "pipe:0",
-		"-c:a", "libopus",
-		"-application", "lowdelay",
-		"-frame_duration", fmt.Sprintf("%d", e.frameMS),
-		"-b:a", fmt.Sprintf("%dk", e.bitrateKbps),
-		"-vbr", "off",
-		"-f", "ogg",
-		"pipe:1",
+	if len(pcm)%2 != 0 {
+		return nil, fmt.Errorf("audio encoder: invalid s16le pcm size=%d", len(pcm))
 	}
-	return runFFmpegWithInput(args, pcm, "audio encoder")
+
+	pcm16 := bytesToInt16(pcm)
+	requiredSamples := e.samplesPerFrame * e.channels
+	if len(pcm16) != requiredSamples {
+		return nil, fmt.Errorf("audio encoder: unexpected frame samples got=%d want=%d", len(pcm16), requiredSamples)
+	}
+
+	out := make([]byte, 4000)
+	e.mu.Lock()
+	n, err := e.enc.Encode(pcm16, out)
+	e.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("audio encoder failed: %w", err)
+	}
+	if n <= 0 {
+		return nil, fmt.Errorf("audio encoder produced no output")
+	}
+
+	pkt := make([]byte, n)
+	copy(pkt, out[:n])
+	return pkt, nil
 }
 
 func (d *Decoder) DecodeToPCM(payload []byte) ([]byte, error) {
 	if len(payload) == 0 {
 		return nil, fmt.Errorf("audio decoder: empty payload")
 	}
-	args := []string{
-		"-hide_banner",
-		"-nostdin",
-		"-loglevel", "error",
-		"-f", "ogg",
-		"-i", "pipe:0",
-		"-f", "s16le",
-		"-acodec", "pcm_s16le",
-		"-ar", fmt.Sprintf("%d", d.sampleRate),
-		"-ac", fmt.Sprintf("%d", d.channels),
-		"pipe:1",
+
+	// Max opus frame duration is 120ms.
+	maxSamplesPerChannel := (d.sampleRate * 120) / 1000
+	if maxSamplesPerChannel <= 0 {
+		maxSamplesPerChannel = 5760
 	}
-	return runFFmpegWithInput(args, payload, "audio decoder")
+	pcm16 := make([]int16, maxSamplesPerChannel*d.channels)
+
+	d.mu.Lock()
+	n, err := d.dec.Decode(payload, pcm16)
+	d.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("audio decoder failed: %w", err)
+	}
+	if n <= 0 {
+		return nil, fmt.Errorf("audio decoder produced no samples")
+	}
+
+	totalSamples := n * d.channels
+	if totalSamples > len(pcm16) {
+		totalSamples = len(pcm16)
+	}
+	return int16ToBytes(pcm16[:totalSamples]), nil
 }
 
 func (d *Decoder) SetFormat(sampleRate, channels int) {
-	if sampleRate > 0 {
-		d.sampleRate = sampleRate
+	if sampleRate <= 0 || channels <= 0 {
+		return
 	}
-	if channels > 0 {
-		d.channels = channels
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.sampleRate == sampleRate && d.channels == channels {
+		return
 	}
+
+	dec, err := hropus.NewDecoder(sampleRate, channels)
+	if err != nil {
+		return
+	}
+	d.sampleRate = sampleRate
+	d.channels = channels
+	d.dec = dec
 }
 
 func (e *Encoder) Close() error { return nil }
 
 func (d *Decoder) Close() error { return nil }
 
-func runFFmpegWithInput(args []string, in []byte, opName string) ([]byte, error) {
-	cmd := exec.Command("ffmpeg", args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("%s stdin pipe: %w", opName, err)
+func bytesToInt16(b []byte) []int16 {
+	out := make([]int16, len(b)/2)
+	for i := range out {
+		out[i] = int16(binary.LittleEndian.Uint16(b[i*2 : i*2+2]))
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("%s stdout pipe: %w", opName, err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("%s stderr pipe: %w", opName, err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("%s start failed: %w", opName, err)
-	}
+	return out
+}
 
-	if _, err := stdin.Write(in); err != nil {
-		_ = stdin.Close()
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		return nil, fmt.Errorf("%s write failed: %w", opName, err)
+func int16ToBytes(samples []int16) []byte {
+	out := make([]byte, len(samples)*2)
+	for i, s := range samples {
+		binary.LittleEndian.PutUint16(out[i*2:i*2+2], uint16(s))
 	}
-	_ = stdin.Close()
-
-	out, readErr := io.ReadAll(stdout)
-	errOut, _ := io.ReadAll(stderr)
-	waitErr := cmd.Wait()
-	if readErr != nil {
-		return nil, fmt.Errorf("%s stdout read failed: %w", opName, readErr)
-	}
-	if waitErr != nil {
-		if len(errOut) > 0 {
-			return nil, fmt.Errorf("%s failed: %s", opName, string(errOut))
-		}
-		return nil, fmt.Errorf("%s failed: %w", opName, waitErr)
-	}
-	if len(out) == 0 {
-		if len(errOut) > 0 {
-			return nil, fmt.Errorf("%s produced no output: %s", opName, string(errOut))
-		}
-		return nil, fmt.Errorf("%s produced no output", opName)
-	}
-	return out, nil
+	return out
 }

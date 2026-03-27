@@ -21,6 +21,7 @@ import (
 )
 
 const portalAudioChoice = "__portal_screencast_audio__"
+const offAudioChoice = "__audio_off__"
 
 func newSource(cfg config.ServerConfig) (Source, error) {
 	rate := cfg.Audio.SampleRate
@@ -35,6 +36,10 @@ func newSource(cfg config.ServerConfig) (Source, error) {
 	device, err := resolveLinuxInputDevice(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if device == offAudioChoice {
+		log.Printf("[audio] linux input source=off (disabled)")
+		return newDisabledSource(), nil
 	}
 	if device == portalAudioChoice {
 		if _, err := exec.LookPath("pw-record"); err != nil {
@@ -70,6 +75,8 @@ func resolveLinuxInputDevice(cfg config.ServerConfig) (string, error) {
 	switch device {
 	case "interactive":
 		return chooseInteractiveLinuxDevice()
+	case "off", "none", "disabled":
+		return offAudioChoice, nil
 	case "portal", "screencast", "portal-screencast":
 		return portalAudioChoice, nil
 	case "system":
@@ -89,6 +96,7 @@ func chooseInteractiveLinuxDevice() (string, error) {
 	monitor := detectSystemMonitorSource()
 	options := make([]string, 0, len(sources)+3)
 	options = append(options,
+		offAudioChoice,
 		"default",
 		portalAudioChoice,
 	)
@@ -109,15 +117,16 @@ func chooseInteractiveLinuxDevice() (string, error) {
 	}
 
 	fmt.Println("[audio] Select input source:")
-	fmt.Println("  1) default (Pulse/PipeWire default)")
-	fmt.Println("  2) portal-screencast-audio (XDG picker, app/system share)")
-	if len(options) > 2 {
-		fmt.Printf("  3) %s (entire system monitor)\n", options[2])
+	fmt.Println("  1) off (disable server audio capture)")
+	fmt.Println("  2) default (Pulse/PipeWire default)")
+	fmt.Println("  3) portal-screencast-audio (XDG picker, app/system share)")
+	if len(options) > 3 {
+		fmt.Printf("  4) %s (entire system monitor)\n", options[3])
 	}
-	for i := 3; i < len(options); i++ {
+	for i := 4; i < len(options); i++ {
 		fmt.Printf("  %d) %s\n", i+1, options[i])
 	}
-	fmt.Print("Enter choice number (default 1): ")
+	fmt.Print("Enter choice number (default 1=off): ")
 
 	reader := bufio.NewReader(os.Stdin)
 	line, _ := reader.ReadString('\n')

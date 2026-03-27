@@ -62,17 +62,24 @@ func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Initialize tile buffer for delta encoding
-	gridSize := cfg.Video.TileGridSize
+	var gridSize int
+	if v, ok := cfg.Capture.RGBACodecConfig["tile_size"]; ok {
+		if val, ok := v.(int); ok {
+			gridSize = val
+		} else if val, ok := v.(float64); ok {
+			gridSize = int(val)
+		}
+	}
 	if gridSize == 0 {
 		gridSize = 10 // Default to 10x10 grid
 	}
 	tileBuffer := NewTileBuffer(gridSize, cfg.Capture.Width, cfg.Capture.Height)
 
 	// Initialize RGBA pipeline
-	rgbaPipeline := rgba.NewServerPipeline(tileBuffer, cfg.CodecConfig)
+	rgbaPipeline := rgba.NewServerPipeline(tileBuffer, cfg.Capture.RGBACodecConfig)
 
 	// Get codec name from config (default: rgba)
-	codecName := cfg.StreamCodec
+	codecName := cfg.Capture.Codec
 	if codecName == "" {
 		codecName = "rgba"
 	}

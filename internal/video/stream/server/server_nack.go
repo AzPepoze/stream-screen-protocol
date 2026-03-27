@@ -46,11 +46,18 @@ func (s *Sender) listenForNACKs() {
 				}
 				// Send video info to client only if needed (throttle to every 5 seconds)
 				if time.Since(s.lastVideoInfoSent) > 5*time.Second {
-					gridSize := uint32(s.cfg.Video.TileGridSize)
-					if gridSize == 0 {
-						gridSize = 10 // Default to 10x10 grid
+					var gridSize int
+					if v, ok := s.cfg.Capture.RGBACodecConfig["tile_size"]; ok {
+						if val, ok := v.(int); ok {
+							gridSize = val
+						} else if val, ok := v.(float64); ok {
+							gridSize = int(val)
+						}
 					}
-					videoInfoPacket := stream.MarshalVideoInfo(uint32(s.cfg.Capture.Width), uint32(s.cfg.Capture.Height), uint32(s.cfg.Capture.FPS), gridSize, s.codecName)
+					if gridSize == 0 {
+						gridSize = 10
+					}
+					videoInfoPacket := stream.MarshalVideoInfo(uint32(s.cfg.Capture.Width), uint32(s.cfg.Capture.Height), uint32(s.cfg.Capture.FPS), uint32(gridSize), s.codecName)
 					if _, err := s.conn.WriteToUDP(videoInfoPacket, addr); err != nil {
 						log.Printf("Server: failed to send VideoInfo to %s: %v (width=%d, height=%d, fps=%d, gridSize=%d, codec=%s)", addr.String(), err, s.cfg.Capture.Width, s.cfg.Capture.Height, s.cfg.Capture.FPS, gridSize, s.codecName)
 					} else {

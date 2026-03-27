@@ -157,8 +157,9 @@ func audioInputDevice(cfg config.ServerConfig, fallback string) string {
 	if cfg.Audio.InputDevice != "" {
 		return cfg.Audio.InputDevice
 	}
-	if cfg.CodecConfig != nil {
-		if v, ok := cfg.CodecConfig["audio_input_device"]; ok {
+	codecCfg := cfg.Capture.H264CodecConfig
+	if codecCfg != nil {
+		if v, ok := codecCfg["audio_bitrate_kbps"]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				return s
 			}

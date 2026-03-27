@@ -14,8 +14,8 @@ func (s *Sender) EnsureH264Pipeline() error {
 	if s.h264Pipeline != nil {
 		return nil
 	}
-	codecCfg := make(map[string]interface{}, len(s.cfg.CodecConfig)+1)
-	for k, v := range s.cfg.CodecConfig {
+	codecCfg := make(map[string]interface{}, len(s.cfg.Capture.H264CodecConfig)+1)
+	for k, v := range s.cfg.Capture.H264CodecConfig {
 		codecCfg[k] = v
 	}
 	codecCfg["fps"] = s.cfg.Capture.FPS

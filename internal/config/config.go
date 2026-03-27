@@ -24,22 +24,19 @@ type ServerConfig struct {
 	ClientHost string `json:"client_host"`
 	Port       int    `json:"port"`
 	Capture    struct {
-		Backend    CaptureBackend `json:"backend"`
-		FPS        int            `json:"fps"`
-		Width      int            `json:"width"`
-		Height     int            `json:"height"`
-		Source     string         `json:"source"`
-		CursorMode string         `json:"cursor_mode"`
-		SourceType string         `json:"source_type"`
+		Backend         CaptureBackend         `json:"backend"`
+		FPS             int                    `json:"fps"`
+		Width           int                    `json:"width"`
+		Height          int                    `json:"height"`
+		Source          string                 `json:"source"`
+		CursorMode      string                 `json:"cursor_mode"`
+		SourceType      string                 `json:"source_type"`
+		Codec           string                 `json:"codec"`
+		RGBACodecConfig map[string]interface{} `json:"rgba_codec_config"`
+		H264CodecConfig map[string]interface{} `json:"h264_codec_config"`
 	} `json:"capture"`
-	Video struct {
-		Codec        string `json:"codec"`
-		BitrateKbps  int    `json:"bitrate_kbps"`
-		Preset       string `json:"preset"`
-		Tune         string `json:"tune"`
-		TileGridSize int    `json:"tile_grid_size"`
-	} `json:"video"`
-	Audio struct {
+	StatsIntervalMS int `json:"stats_interval_ms"`
+	Audio           struct {
 		Enabled     bool   `json:"enabled"`
 		Codec       string `json:"codec"`
 		SampleRate  int    `json:"sample_rate"`
@@ -48,9 +45,6 @@ type ServerConfig struct {
 		BitrateKbps int    `json:"bitrate_kbps"`
 		InputDevice string `json:"audio_input_device"`
 	} `json:"audio"`
-	StreamCodec     string                 `json:"stream_codec"` // Transmission codec: "rgba" or "h264"
-	CodecConfig     map[string]interface{} `json:"codec_config"` // Codec-specific settings
-	StatsIntervalMS int                    `json:"stats_interval_ms"`
 }
 
 type ClientConfig struct {
@@ -149,22 +143,16 @@ func (c ServerConfig) Validate() error {
 	default:
 		return errors.New("capture.source_type must be one of monitor, window, virtual, any")
 	}
-	if c.Video.Codec == "" {
-		return errors.New("video.codec is required")
-	}
-	if c.Video.BitrateKbps <= 0 {
-		return errors.New("video.bitrate_kbps must be greater than 0")
-	}
-	if c.Video.Preset == "" || c.Video.Tune == "" {
-		return errors.New("video.preset and video.tune are required")
+	if c.Capture.Codec == "" {
+		return errors.New("capture.codec is required")
 	}
 	if c.StatsIntervalMS <= 0 {
 		return errors.New("stats_interval_ms must be greater than 0")
 	}
-	if err := validateH264BackendValue(c.CodecConfig, "h264_encoder_backend"); err != nil {
+	if err := validateH264BackendValue(c.Capture.H264CodecConfig, "h264_encoder_backend"); err != nil {
 		return err
 	}
-	if err := validateH264BackendValue(c.CodecConfig, "h264_decoder_backend"); err != nil {
+	if err := validateH264BackendValue(c.Capture.H264CodecConfig, "h264_decoder_backend"); err != nil {
 		return err
 	}
 	if c.Audio.Enabled {
@@ -341,90 +329,54 @@ func applyClientCompat(cfg *ClientConfig, compat clientConfigCompat) {
 }
 
 func applyServerCompat(cfg *ServerConfig, compat serverConfigCompat) {
-	if cfg.StreamCodec == "" && compat.Codec != "" {
-		cfg.StreamCodec = compat.Codec
+	if cfg.Capture.Codec == "" && compat.Codec != "" {
+		cfg.Capture.Codec = compat.Codec
 	}
-	if cfg.StreamCodec == "" {
-		cfg.StreamCodec = constants.DefaultCodec
+	if cfg.Capture.Codec == "" {
+		cfg.Capture.Codec = constants.DefaultCodec
 	}
 
-	if cfg.CodecConfig == nil {
-		cfg.CodecConfig = make(map[string]interface{})
+	if cfg.Capture.H264CodecConfig == nil {
+		cfg.Capture.H264CodecConfig = make(map[string]interface{})
 	}
-	switch cfg.StreamCodec {
+	if cfg.Capture.RGBACodecConfig == nil {
+		cfg.Capture.RGBACodecConfig = make(map[string]interface{})
+	}
+
+	switch cfg.Capture.Codec {
 	case "h264":
-		mergeMapIfMissing(cfg.CodecConfig, compat.H264CodecConfig)
+		mergeMapIfMissing(cfg.Capture.H264CodecConfig, compat.H264CodecConfig)
 	case "rgba":
-		mergeMapIfMissing(cfg.CodecConfig, compat.RGBACodecConfig)
+		mergeMapIfMissing(cfg.Capture.RGBACodecConfig, compat.RGBACodecConfig)
 	}
 
 	// Accept common alias keys in h264_codec_config.
-	if v, ok := cfg.CodecConfig["bitrate_kbps"]; ok {
-		if _, exists := cfg.CodecConfig["bitrate"]; !exists {
-			cfg.CodecConfig["bitrate"] = v
+	if v, ok := cfg.Capture.H264CodecConfig["bitrate_kbps"]; ok {
+		if _, exists := cfg.Capture.H264CodecConfig["bitrate"]; !exists {
+			cfg.Capture.H264CodecConfig["bitrate"] = v
 		}
 	}
-	if v, ok := cfg.CodecConfig["speed_preset"]; ok {
-		if _, exists := cfg.CodecConfig["preset"]; !exists {
-			cfg.CodecConfig["preset"] = v
+	if v, ok := cfg.Capture.H264CodecConfig["speed_preset"]; ok {
+		if _, exists := cfg.Capture.H264CodecConfig["preset"]; !exists {
+			cfg.Capture.H264CodecConfig["preset"] = v
 		}
 	}
-	if v, ok := cfg.CodecConfig["key_int_max"]; ok {
-		if _, exists := cfg.CodecConfig["key-int-max"]; !exists {
-			cfg.CodecConfig["key-int-max"] = v
+	if v, ok := cfg.Capture.H264CodecConfig["key_int_max"]; ok {
+		if _, exists := cfg.Capture.H264CodecConfig["key-int-max"]; !exists {
+			cfg.Capture.H264CodecConfig["key-int-max"] = v
 		}
 	}
-	if v, ok := cfg.CodecConfig["tile_size"]; ok {
-		if _, exists := cfg.CodecConfig["tile_num"]; !exists {
-			cfg.CodecConfig["tile_num"] = v
+	if v, ok := cfg.Capture.RGBACodecConfig["tile_size"]; ok {
+		if _, exists := cfg.Capture.RGBACodecConfig["tile_num"]; !exists {
+			cfg.Capture.RGBACodecConfig["tile_num"] = v
 		}
 	}
-	if v, ok := cfg.CodecConfig["tile_num"]; ok {
-		if _, exists := cfg.CodecConfig["tile_size"]; !exists {
-			cfg.CodecConfig["tile_size"] = v
+	if v, ok := cfg.Capture.RGBACodecConfig["tile_num"]; ok {
+		if _, exists := cfg.Capture.RGBACodecConfig["tile_size"]; !exists {
+			cfg.Capture.RGBACodecConfig["tile_size"] = v
 		}
 	}
 
-	if cfg.Video.BitrateKbps <= 0 {
-		switch {
-		case compat.Bitrate > 0:
-			cfg.Video.BitrateKbps = compat.Bitrate
-		case intFromAny(cfg.CodecConfig["bitrate"]) > 0:
-			cfg.Video.BitrateKbps = intFromAny(cfg.CodecConfig["bitrate"])
-		case intFromAny(cfg.CodecConfig["bitrate_kbps"]) > 0:
-			cfg.Video.BitrateKbps = intFromAny(cfg.CodecConfig["bitrate_kbps"])
-		default:
-			cfg.Video.BitrateKbps = constants.DefaultH264Bitrate
-		}
-	}
-	if cfg.Video.Codec == "" {
-		cfg.Video.Codec = "libx264"
-	}
-	if cfg.Video.Preset == "" {
-		if preset := stringFromAny(cfg.CodecConfig["preset"]); preset != "" {
-			cfg.Video.Preset = preset
-		} else if preset := stringFromAny(cfg.CodecConfig["speed_preset"]); preset != "" {
-			cfg.Video.Preset = preset
-		} else {
-			cfg.Video.Preset = constants.DefaultH264Preset
-		}
-	}
-	if cfg.Video.Tune == "" {
-		if tune := stringFromAny(cfg.CodecConfig["tune"]); tune != "" {
-			cfg.Video.Tune = tune
-		} else {
-			cfg.Video.Tune = "zerolatency"
-		}
-	}
-	if cfg.Video.TileGridSize <= 0 {
-		if tileSize := intFromAny(cfg.CodecConfig["tile_size"]); tileSize > 0 {
-			cfg.Video.TileGridSize = tileSize
-		} else if tileSize := intFromAny(cfg.CodecConfig["tile_num"]); tileSize > 0 {
-			cfg.Video.TileGridSize = tileSize
-		} else {
-			cfg.Video.TileGridSize = constants.DefaultTileGridSize
-		}
-	}
 	if cfg.StatsIntervalMS <= 0 {
 		cfg.StatsIntervalMS = 1000
 	}
