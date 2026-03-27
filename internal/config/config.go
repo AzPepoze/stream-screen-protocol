@@ -39,6 +39,15 @@ type ServerConfig struct {
 		Tune         string `json:"tune"`
 		TileGridSize int    `json:"tile_grid_size"`
 	} `json:"video"`
+	Audio struct {
+		Enabled     bool   `json:"enabled"`
+		Codec       string `json:"codec"`
+		SampleRate  int    `json:"sample_rate"`
+		Channels    int    `json:"channels"`
+		FrameMS     int    `json:"frame_ms"`
+		BitrateKbps int    `json:"bitrate_kbps"`
+		InputDevice string `json:"audio_input_device"`
+	} `json:"audio"`
 	StreamCodec     string                 `json:"stream_codec"` // Transmission codec: "rgba" or "h264"
 	CodecConfig     map[string]interface{} `json:"codec_config"` // Codec-specific settings
 	StatsIntervalMS int                    `json:"stats_interval_ms"`
@@ -68,6 +77,10 @@ type ClientConfig struct {
 		ForceOutput       bool    `json:"force_output_partial"`
 		AutoTuneByFPS     bool    `json:"auto_tune_by_fps"`
 	} `json:"network"`
+	Audio struct {
+		Enabled      bool   `json:"enabled"`
+		OutputDevice string `json:"audio_output_device"`
+	} `json:"audio"`
 }
 
 func LoadServer(path string) (ServerConfig, error) {
@@ -153,6 +166,26 @@ func (c ServerConfig) Validate() error {
 	}
 	if err := validateH264BackendValue(c.CodecConfig, "h264_decoder_backend"); err != nil {
 		return err
+	}
+	if c.Audio.Enabled {
+		if c.Audio.Codec == "" {
+			return errors.New("audio.codec is required when audio.enabled=true")
+		}
+		if c.Audio.Codec != "opus" {
+			return errors.New("audio.codec must be opus")
+		}
+		if c.Audio.SampleRate <= 0 {
+			return errors.New("audio.sample_rate must be greater than 0")
+		}
+		if c.Audio.Channels <= 0 {
+			return errors.New("audio.channels must be greater than 0")
+		}
+		if c.Audio.FrameMS <= 0 {
+			return errors.New("audio.frame_ms must be greater than 0")
+		}
+		if c.Audio.BitrateKbps <= 0 {
+			return errors.New("audio.bitrate_kbps must be greater than 0")
+		}
 	}
 	return nil
 }
@@ -302,6 +335,9 @@ func applyClientCompat(cfg *ClientConfig, compat clientConfigCompat) {
 	} else {
 		cfg.Network.AutoTuneByFPS = true
 	}
+	if cfg.Audio.OutputDevice == "" {
+		cfg.Audio.OutputDevice = "default"
+	}
 }
 
 func applyServerCompat(cfg *ServerConfig, compat serverConfigCompat) {
@@ -391,6 +427,24 @@ func applyServerCompat(cfg *ServerConfig, compat serverConfigCompat) {
 	}
 	if cfg.StatsIntervalMS <= 0 {
 		cfg.StatsIntervalMS = 1000
+	}
+	if cfg.Audio.Codec == "" {
+		cfg.Audio.Codec = "opus"
+	}
+	if cfg.Audio.SampleRate <= 0 {
+		cfg.Audio.SampleRate = 48000
+	}
+	if cfg.Audio.Channels <= 0 {
+		cfg.Audio.Channels = 2
+	}
+	if cfg.Audio.FrameMS <= 0 {
+		cfg.Audio.FrameMS = 20
+	}
+	if cfg.Audio.BitrateKbps <= 0 {
+		cfg.Audio.BitrateKbps = 96
+	}
+	if cfg.Audio.InputDevice == "" {
+		cfg.Audio.InputDevice = "default"
 	}
 }
 

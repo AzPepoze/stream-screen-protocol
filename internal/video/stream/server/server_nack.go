@@ -58,6 +58,22 @@ func (s *Sender) listenForNACKs() {
 						s.lastVideoInfoSent = time.Now()
 					}
 				}
+				if s.cfg.Audio.Enabled && time.Since(s.lastAudioInfoSent) > 5*time.Second {
+					audioInfoPacket := stream.MarshalAudioInfo(
+						uint32(s.cfg.Audio.SampleRate),
+						uint32(s.cfg.Audio.Channels),
+						uint32(s.cfg.Audio.FrameMS),
+						uint32(s.cfg.Audio.BitrateKbps),
+						s.cfg.Audio.Codec,
+					)
+					if _, err := s.conn.WriteToUDP(audioInfoPacket, addr); err != nil {
+						log.Printf("Server: failed to send AudioInfo to %s: %v", addr.String(), err)
+					} else {
+						log.Printf("Server: sent AudioInfo to %s (codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps)",
+							addr.String(), s.cfg.Audio.Codec, s.cfg.Audio.SampleRate, s.cfg.Audio.Channels, s.cfg.Audio.FrameMS, s.cfg.Audio.BitrateKbps)
+						s.lastAudioInfoSent = time.Now()
+					}
+				}
 			case stream.CSPPacketTypeNACK:
 				s.setDestinationAndSeen(addr)
 				log.Printf("Server: received NACK from %s", addr.String())

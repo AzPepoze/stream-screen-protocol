@@ -18,6 +18,8 @@ const (
 	CSPPacketTypeVideoInfo = 5 // Server sends video resolution/fps/gridSize to client
 	CSPPacketTypeTile      = 6 // Server sends individual tile data
 	CSPPacketTypeTileReq   = 7 // Client requests missing tiles
+	CSPPacketTypeAudioInfo = 8 // Server sends audio format metadata to client
+	CSPPacketTypeAudioData = 9 // Server sends encoded audio payload
 )
 
 // PacketHeader represents the CSP packet header.
@@ -240,4 +242,45 @@ func UnmarshalTileRequest(buf []byte) ([]uint16, error) {
 		tileIDs[i] = binary.BigEndian.Uint16(buf[CSPHeaderSize+1+i*2 : CSPHeaderSize+1+(i+1)*2])
 	}
 	return tileIDs, nil
+}
+
+// MarshalAudioInfo serializes audio stream metadata.
+func MarshalAudioInfo(sampleRate, channels, frameMS, bitrateKbps uint32, codecName string) []byte {
+	buf := make([]byte, CSPHeaderSize+16+1+len(codecName))
+	h := PacketHeader{
+		Version:    CSPVersion,
+		PacketType: CSPPacketTypeAudioInfo,
+	}
+	h.Marshal(buf[:CSPHeaderSize])
+	binary.BigEndian.PutUint32(buf[CSPHeaderSize:CSPHeaderSize+4], sampleRate)
+	binary.BigEndian.PutUint32(buf[CSPHeaderSize+4:CSPHeaderSize+8], channels)
+	binary.BigEndian.PutUint32(buf[CSPHeaderSize+8:CSPHeaderSize+12], frameMS)
+	binary.BigEndian.PutUint32(buf[CSPHeaderSize+12:CSPHeaderSize+16], bitrateKbps)
+	buf[CSPHeaderSize+16] = uint8(len(codecName))
+	copy(buf[CSPHeaderSize+17:], []byte(codecName))
+	return buf
+}
+
+// UnmarshalAudioInfo extracts audio stream metadata.
+func UnmarshalAudioInfo(buf []byte) (sampleRate, channels, frameMS, bitrateKbps uint32, codecName string, err error) {
+	if len(buf) < CSPHeaderSize+17 {
+		return 0, 0, 0, 0, "", fmt.Errorf("buffer too small for AudioInfo: %d", len(buf))
+	}
+	var h PacketHeader
+	if err := h.Unmarshal(buf[:CSPHeaderSize]); err != nil {
+		return 0, 0, 0, 0, "", err
+	}
+	if h.PacketType != CSPPacketTypeAudioInfo {
+		return 0, 0, 0, 0, "", fmt.Errorf("not an AudioInfo packet")
+	}
+	sampleRate = binary.BigEndian.Uint32(buf[CSPHeaderSize : CSPHeaderSize+4])
+	channels = binary.BigEndian.Uint32(buf[CSPHeaderSize+4 : CSPHeaderSize+8])
+	frameMS = binary.BigEndian.Uint32(buf[CSPHeaderSize+8 : CSPHeaderSize+12])
+	bitrateKbps = binary.BigEndian.Uint32(buf[CSPHeaderSize+12 : CSPHeaderSize+16])
+	codecNameLen := int(buf[CSPHeaderSize+16])
+	if len(buf) < CSPHeaderSize+17+codecNameLen {
+		return 0, 0, 0, 0, "", fmt.Errorf("AudioInfo buffer truncated for codec name")
+	}
+	codecName = string(buf[CSPHeaderSize+17 : CSPHeaderSize+17+codecNameLen])
+	return sampleRate, channels, frameMS, bitrateKbps, codecName, nil
 }

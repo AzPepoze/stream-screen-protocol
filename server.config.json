@@ -4,7 +4,7 @@
 	"port": 7700,
 	"codec": "h264",
 	"rgba_codec_config": {
-		"tile_size": 10
+		"tile_size": 4
 	},
 	"h264_codec_config": {
 		"bitrate": 8000,
@@ -13,12 +13,21 @@
 	},
 	"capture": {
 		"backend": "auto",
-		"fps": 100,
+		"fps": 60,
 		"width": 1920,
 		"height": 1080,
 		"source": "default",
 		"cursor_mode": "embedded",
 		"source_type": "monitor"
 	},
-	"stats_interval_ms": 1000
+	"stats_interval_ms": 1000,
+	"audio": {
+		"enabled": true,
+		"codec": "opus",
+		"sample_rate": 48000,
+		"channels": 2,
+		"frame_ms": 20,
+		"bitrate_kbps": 96,
+		"audio_input_device": "interactive"
+	}
 }

@@ -31,3 +31,15 @@ func TestMarshalUnmarshalJoin(t *testing.T) {
 		t.Fatalf("expected empty join payload, got %q", got2)
 	}
 }
+
+func TestMarshalUnmarshalAudioInfo(t *testing.T) {
+	b := s.MarshalAudioInfo(48000, 2, 20, 96, "opus")
+	sampleRate, channels, frameMS, bitrate, codec, err := s.UnmarshalAudioInfo(b)
+	if err != nil {
+		t.Fatalf("UnmarshalAudioInfo returned error: %v", err)
+	}
+	if sampleRate != 48000 || channels != 2 || frameMS != 20 || bitrate != 96 || codec != "opus" {
+		t.Fatalf("unexpected AudioInfo values: rate=%d ch=%d frame=%d bitrate=%d codec=%q",
+			sampleRate, channels, frameMS, bitrate, codec)
+	}
+}

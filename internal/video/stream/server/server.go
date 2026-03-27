@@ -30,9 +30,11 @@ type Sender struct {
 	lastClientSeenAt  time.Time
 	clientTimeout     time.Duration
 	lastVideoInfoSent time.Time // Track when VideoInfo was last sent to avoid spamming
+	lastAudioInfoSent time.Time // Track when AudioInfo was last sent to avoid spamming
 	codecName         string    // Transmission codec (rgba or h264)
 	rgbaPipeline      *rgba.ServerPipeline
 	h264Pipeline      *videoh264.ServerPipeline
+	audioCancel       context.CancelFunc
 }
 
 func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
@@ -143,6 +145,9 @@ func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
 
 func (s *Sender) Stop() error {
 	s.cancel()
+	if s.audioCancel != nil {
+		s.audioCancel()
+	}
 	_ = s.CloseH264Pipeline()
 	if s.captureStop != nil {
 		s.captureStop()

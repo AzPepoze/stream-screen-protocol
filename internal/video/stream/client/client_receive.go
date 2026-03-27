@@ -59,6 +59,22 @@ func (r *ClientReceiver) receiveLoop() {
 				continue
 			}
 
+			if h.PacketType == stream.CSPPacketTypeAudioInfo {
+				sampleRate, channels, frameMS, bitrate, codecName, err := stream.UnmarshalAudioInfo(buf[:n])
+				if err == nil {
+					r.setAudioInfo(sampleRate, channels, frameMS, bitrate, codecName)
+					log.Printf("Client: AudioInfo - codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
+						codecName, sampleRate, channels, frameMS, bitrate)
+				}
+				continue
+			}
+
+			if h.PacketType == stream.CSPPacketTypeAudioData {
+				payload := buf[stream.CSPHeaderSize:n]
+				r.handleAudioDataPacket(h.FrameSeq, h.PacketID, h.TotalPackets, payload)
+				continue
+			}
+
 			if h.PacketType != stream.CSPPacketTypeData {
 				continue
 			}

@@ -19,5 +19,9 @@
 		"allow_partial_frames": true,
 		"force_output_partial": true,
 		"auto_tune_by_fps": true
+	},
+	"audio": {
+		"enabled": true,
+		"audio_output_device": "interactive"
 	}
 }

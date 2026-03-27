@@ -39,6 +39,8 @@ func main() {
 	log.Printf("backend=%s", backend)
 	log.Printf("bind=%s:%d destination=%s:%d", cfg.BindHost, cfg.Port, destinationHost, cfg.Port)
 	log.Printf("stream codec=%s capture=%dx%d@%dfps", cfg.StreamCodec, cfg.Capture.Width, cfg.Capture.Height, cfg.Capture.FPS)
+	log.Printf("audio enabled=%t codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
+		cfg.Audio.Enabled, cfg.Audio.Codec, cfg.Audio.SampleRate, cfg.Audio.Channels, cfg.Audio.FrameMS, cfg.Audio.BitrateKbps)
 
 	sender, err := server.NewSender(cfg, destinationHost)
 	if err != nil {
@@ -49,6 +51,9 @@ func main() {
 		log.Fatalf("h264 init failed: %v", err)
 	}
 	sender.StartControlPlane()
+	if err := sender.StartAudio(); err != nil {
+		log.Fatalf("audio init failed: %v", err)
+	}
 
 	source, err := capture.New(cfg, backend)
 	if err != nil {

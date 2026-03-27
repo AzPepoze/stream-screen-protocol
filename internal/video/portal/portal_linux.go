@@ -124,6 +124,10 @@ func StartScreenCast(ctx context.Context, cfg config.ServerConfig) (*ScreenCastS
 		"types":        dbus.MakeVariant(sourceTypeBits(cfg.Capture.SourceType)),
 		"cursor_mode":  dbus.MakeVariant(cursorModeBits(cfg.Capture.CursorMode)),
 	}
+	if cfg.Audio.Enabled {
+		// Request system audio stream when available in portal implementation.
+		selectOptions["audio"] = dbus.MakeVariant(true)
+	}
 
 	var selectRequest dbus.ObjectPath
 	if err := desktop.CallWithContext(ctx, screenCastInterface+".SelectSources", 0, sessionHandle, selectOptions).Store(&selectRequest); err != nil {

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"streamscreen/internal/audio/opus"
+	"streamscreen/internal/audio/playback"
 	"streamscreen/internal/config"
 	videoh264 "streamscreen/internal/video/codec/h264"
 	"streamscreen/internal/video/codec/rgba"
@@ -45,6 +47,24 @@ type ClientReceiver struct {
 	h264ErrLogAt  time.Time
 	frameDirty    atomic.Bool
 	autoTuneByFPS bool
+	audioInfoMu   sync.RWMutex
+	audioCodec    string
+	audioRate     uint32
+	audioChannels uint32
+	audioFrameMS  uint32
+	audioBitrate  uint32
+	audioEnabled  bool
+	audioDecoder  *opus.Decoder
+	audioPlayer   playback.Player
+	audioFrames   chan []byte
+	audioFragMu   sync.Mutex
+	audioFragBuf  map[uint32]*audioFragmentBuffer
+}
+
+type audioFragmentBuffer struct {
+	fragments    map[uint32][]byte
+	totalPackets uint32
+	receivedAt   time.Time
 }
 
 // TileFragmentBuffer holds reassembly data for fragmented tiles
@@ -91,6 +111,9 @@ func NewClientReceiver(cfg config.ClientConfig) (*ClientReceiver, error) {
 		frameChan:     make(chan assembledFrame, 128),
 		tileGridSize:  3,
 		autoTuneByFPS: cfg.Network.AutoTuneByFPS,
+		audioEnabled:  cfg.Audio.Enabled,
+		audioFrames:   make(chan []byte, 64),
+		audioFragBuf:  make(map[uint32]*audioFragmentBuffer),
 	}, nil
 }
 
@@ -132,6 +155,9 @@ func (r *ClientReceiver) Start() error {
 				}
 				r.jitterBuffer.SetCompleteFramesOnly()
 				go r.appsrcLoop()
+				if err := r.startAudioPipeline(); err != nil {
+					return err
+				}
 				return nil
 			}
 
@@ -139,6 +165,9 @@ func (r *ClientReceiver) Start() error {
 			go r.appsrcLoop()
 			go r.tileRequestLoop()
 			go r.tileFrameReconstructionLoop()
+			if err := r.startAudioPipeline(); err != nil {
+				return err
+			}
 			return nil
 		}
 		r.videoInfoMu.RUnlock()
@@ -196,6 +225,12 @@ func (r *ClientReceiver) GetVideoFPS() uint32 {
 
 func (r *ClientReceiver) Stop() error {
 	r.cancel()
+	if r.audioDecoder != nil {
+		_ = r.audioDecoder.Close()
+	}
+	if r.audioPlayer != nil {
+		_ = r.audioPlayer.Close()
+	}
 	_ = r.CloseH264Pipeline()
 	return r.conn.Close()
 }
@@ -204,4 +239,24 @@ func (r *ClientReceiver) currentCodecName() string {
 	r.videoInfoMu.RLock()
 	defer r.videoInfoMu.RUnlock()
 	return r.codecName
+}
+
+func (r *ClientReceiver) startAudioPipeline() error {
+	if !r.audioEnabled {
+		return nil
+	}
+	decoder, err := opus.NewDecoder(r.cfg)
+	if err != nil {
+		return err
+	}
+	player, err := playback.New(r.cfg)
+	if err != nil {
+		_ = decoder.Close()
+		return err
+	}
+	r.audioDecoder = decoder
+	r.audioPlayer = player
+
+	go r.audioLoop()
+	return nil
 }
