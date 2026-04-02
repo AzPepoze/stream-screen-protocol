@@ -1,7 +1,7 @@
 package rgba
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"net"
 	"streamscreen/internal/video/stream"
 	"time"
@@ -49,7 +49,7 @@ func (p *ServerPipeline) SendTilesBurstWithPacing(frameSeq uint32, tileIDs []uin
 	// Send each tile with its own fragment count
 	for _, tileID := range tileIDs {
 		tileData := p.tileBuffer.GetTile(tileID)
-		if tileData == nil || len(tileData) == 0 {
+		if len(tileData) == 0 {
 			continue
 		}
 
@@ -84,7 +84,7 @@ func (p *ServerPipeline) SendTilesBurstWithPacing(frameSeq uint32, tileIDs []uin
 
 			_, err := conn.WriteToUDP(packet, destAddr)
 			if err != nil {
-				log.Printf("[rgba-server] tile write error frame=%d tile=%d dest=%s err=%v",
+				logger.Info("[rgba-server] tile write error frame=%d tile=%d dest=%s err=%v",
 					frameSeq, tileID, destAddr.String(), err)
 				return err
 			}

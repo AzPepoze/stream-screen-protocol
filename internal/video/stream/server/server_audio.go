@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"log"
+	"streamscreen/internal/logger"
 	"time"
 
 	"streamscreen/internal/audio/capture"
@@ -39,7 +39,7 @@ func (s *Sender) StartAudio() error {
 		return err
 	}
 
-	log.Printf("[server] audio pipeline started codec=%s sample_rate=%d channels=%d frame_ms=%d", s.cfg.Audio.Codec, s.cfg.Audio.SampleRate, s.cfg.Audio.Channels, s.cfg.Audio.FrameMS)
+	logger.Info("[server] audio pipeline started codec=%s sample_rate=%d channels=%d frame_ms=%d", s.cfg.Audio.Codec, s.cfg.Audio.SampleRate, s.cfg.Audio.Channels, s.cfg.Audio.FrameMS)
 
 	go func() {
 		defer func() {

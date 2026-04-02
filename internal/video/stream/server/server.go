@@ -3,14 +3,14 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
+	"streamscreen/internal/logger"
 	"net"
 	"sync"
 	"time"
 
 	"streamscreen/internal/config"
 	videoh264 "streamscreen/internal/video/codec/h264"
-	"streamscreen/internal/video/codec/rgba"
+	"streamscreen/internal/video/codec/blocky"
 )
 
 // Sender handles video encoding and custom protocol transmission.
@@ -26,13 +26,12 @@ type Sender struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
 	minFramePeriod    time.Duration
-	lastFrameAt       time.Time
 	lastClientSeenAt  time.Time
 	clientTimeout     time.Duration
 	lastVideoInfoSent time.Time // Track when VideoInfo was last sent to avoid spamming
 	lastAudioInfoSent time.Time // Track when AudioInfo was last sent to avoid spamming
-	codecName         string    // Transmission codec (rgba or h264)
-	rgbaPipeline      *rgba.ServerPipeline
+	codecName         string    // Transmission codec (blocky or h264)
+	blockyPipeline    *blocky.ServerPipeline
 	h264Pipeline      *videoh264.ServerPipeline
 	audioCancel       context.CancelFunc
 	ccMu              sync.RWMutex
@@ -50,7 +49,7 @@ func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
 			return nil, err
 		}
 		if addr.IP.IsLoopback() && addr.Port == cfg.Port {
-			log.Printf("Sender: configured destination %s appears to be local; ignoring to avoid self-send", addr.String())
+			logger.Info("Sender: configured destination %s appears to be local; ignoring to avoid self-send", addr.String())
 			addr = nil
 		}
 	}
@@ -79,13 +78,13 @@ func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
 	}
 	tileBuffer := NewTileBuffer(gridSize, cfg.Capture.Width, cfg.Capture.Height)
 
-	// Initialize RGBA pipeline
-	rgbaPipeline := rgba.NewServerPipeline(tileBuffer, cfg.Capture.RGBACodecConfig)
+	// Initialize blocky pipeline
+	blockyPipeline := blocky.NewServerPipeline(tileBuffer, cfg.Capture.RGBACodecConfig)
 
-	// Get codec name from config (default: rgba)
+	// Get codec name from config (default: blocky)
 	codecName := cfg.Capture.Codec
 	if codecName == "" {
-		codecName = "rgba"
+		codecName = "blocky"
 	}
 
 	return &Sender{
@@ -99,7 +98,7 @@ func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
 		minFramePeriod: time.Second / time.Duration(cfg.Capture.FPS),
 		clientTimeout:  5 * time.Second,
 		codecName:      codecName,
-		rgbaPipeline:   rgbaPipeline,
+		blockyPipeline: blockyPipeline,
 	}, nil
 }
 
@@ -111,13 +110,13 @@ func (s *Sender) StartControlPlane() {
 func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
 	expectedSize := s.cfg.Capture.Width * s.cfg.Capture.Height * 4
 	if len(rgbaData) != expectedSize {
-		log.Printf("[server] WARN: buffer size mismatch - got %d bytes, expected %d (%dx%dx4)", len(rgbaData), expectedSize, s.cfg.Capture.Width, s.cfg.Capture.Height)
+		logger.Info("[server] WARN: buffer size mismatch - got %d bytes, expected %d (%dx%dx4)", len(rgbaData), expectedSize, s.cfg.Capture.Width, s.cfg.Capture.Height)
 		return
 	}
 
 	// Handle based on codec type
-	if s.codecName == "rgba" && s.rgbaPipeline != nil {
-		// RGBA tile-based transmission
+	if s.codecName == "blocky" && s.blockyPipeline != nil {
+		// blocky tile-based transmission
 		changedTiles := s.tileBuffer.UpdateTiles(rgbaData)
 		if changedTiles == nil {
 			changedTiles = []uint16{}
@@ -128,13 +127,15 @@ func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
 			destAddr := s.activeDestination()
 			if destAddr != nil {
 				s.frameSeq++
-				s.rgbaPipeline.SendTilesBurstWithPacing(s.frameSeq, tilesToSend, s.conn, destAddr, s.videoPacketGap())
+				if err := s.blockyPipeline.SendTilesBurstWithPacing(s.frameSeq, tilesToSend, s.conn, destAddr, s.videoPacketGap()); err != nil {
+					logger.Info("[server] blocky send failed: %v", err)
+				}
 			}
 		}
 	} else if s.codecName == "h264" {
 		// H264 frame-based transmission: encode and send full frame packets.
 		if err := s.SendH264Frame(rgbaData, s.cfg.Capture.Width, s.cfg.Capture.Height); err != nil {
-			log.Printf("[server] h264 send failed: %v", err)
+			logger.Info("[server] h264 send failed: %v", err)
 		}
 	} else {
 		// Fallback to tile-based (RGBA)
@@ -148,7 +149,9 @@ func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
 			destAddr := s.activeDestination()
 			if destAddr != nil {
 				s.frameSeq++
-				s.rgbaPipeline.SendTilesBurstWithPacing(s.frameSeq, tilesToSend, s.conn, destAddr, s.videoPacketGap())
+				if err := s.blockyPipeline.SendTilesBurstWithPacing(s.frameSeq, tilesToSend, s.conn, destAddr, s.videoPacketGap()); err != nil {
+					logger.Info("[server] fallback send failed: %v", err)
+				}
 			}
 		}
 	}
@@ -174,7 +177,7 @@ func (s *Sender) activeDestination() *net.UDPAddr {
 		return nil
 	}
 	if !s.lastClientSeenAt.IsZero() && time.Since(s.lastClientSeenAt) > s.clientTimeout {
-		log.Printf("[server] client timed out after %s, stopping stream until reconnect", s.clientTimeout)
+		logger.Info("[server] client timed out after %s, stopping stream until reconnect", s.clientTimeout)
 		s.destAddr = nil
 		return nil
 	}

@@ -5,6 +5,7 @@ package capture
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"streamscreen/internal/config"
 )
@@ -21,7 +22,11 @@ func newSource(cfg config.ServerConfig) (Source, error) {
 	if ch <= 0 {
 		ch = 2
 	}
-	device := audioInputDevice(cfg, "audio=virtual-audio-capturer")
+	deviceRaw := audioInputDevice(cfg, "audio=virtual-audio-capturer")
+	device := strings.ToLower(strings.TrimSpace(deviceRaw))
+	if device == "off" || device == "none" || device == "disabled" {
+		return newDisabledSource(), nil
+	}
 
 	return newFFmpegSource(cfg, func() *exec.Cmd {
 		args := []string{

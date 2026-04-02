@@ -1,7 +1,7 @@
 package client
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"time"
 )
 
@@ -19,7 +19,7 @@ func (r *ClientReceiver) tileFrameReconstructionLoop() {
 	ticker := time.NewTicker(frameInterval)
 	defer ticker.Stop()
 
-	log.Printf("Client: tileFrameReconstructionLoop started - compositing at %d fps", fps)
+	logger.Info("Client: tileFrameReconstructionLoop started - compositing at %d fps", fps)
 
 	for {
 		select {

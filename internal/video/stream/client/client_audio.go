@@ -1,7 +1,7 @@
 package client
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -25,11 +25,11 @@ func (r *ClientReceiver) audioLoop() {
 			}
 			pcm, err := r.audioDecoder.DecodeToPCM(payload)
 			if err != nil {
-				log.Printf("Client: audio decode failed: %v", err)
+				logger.Info("Client: audio decode failed: %v", err)
 				continue
 			}
 			if err := r.audioPlayer.PlayPCM(pcm); err != nil {
-				log.Printf("Client: audio playback write failed: %v", err)
+				logger.Info("Client: audio playback write failed: %v", err)
 				continue
 			}
 
@@ -43,7 +43,7 @@ func (r *ClientReceiver) audioLoop() {
 				}
 				packetsPerSec := float64(playedPackets) / elapsed
 				kbps := (float64(playedPCMBytes) * 8 / elapsed) / 1000
-				log.Printf("Client: audio playback packets=%d rate=%.1f pkt/s pcm=%.1f kbps", playedPackets, packetsPerSec, kbps)
+				logger.Info("Client: audio playback packets=%d rate=%.1f pkt/s pcm=%.1f kbps", playedPackets, packetsPerSec, kbps)
 				lastLogAt = now
 				playedPackets = 0
 				playedPCMBytes = 0
@@ -146,7 +146,7 @@ func (r *ClientReceiver) enqueueAudioPayload(payload []byte) {
 	select {
 	case r.audioFrames <- packet:
 	default:
-		log.Printf("Client: audio queue full, dropping packet")
+		logger.Info("Client: audio queue full, dropping packet")
 		atomic.AddUint64(&r.ccAudioDrops, 1)
 	}
 }

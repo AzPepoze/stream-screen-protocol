@@ -1,7 +1,7 @@
 package client
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"sync/atomic"
 	"time"
 )
@@ -59,7 +59,7 @@ func (r *ClientReceiver) enqueueFrameLatest(f assembledFrame) {
 	case <-r.ctx.Done():
 	case r.frameChan <- f:
 	default:
-		log.Printf("frame channel full, dropping frame=%d", f.Seq)
+		logger.Info("frame channel full, dropping frame=%d", f.Seq)
 		atomic.AddUint64(&r.ccFrameDrops, 1)
 	}
 }
@@ -75,7 +75,7 @@ func (r *ClientReceiver) logH264DecodeError(seq uint32, err error) {
 		return
 	}
 
-	log.Printf("Client: H264 decode errors=%d latest_frame=%d err=%v", r.h264ErrCount, seq, err)
+	logger.Info("Client: H264 decode errors=%d latest_frame=%d err=%v", r.h264ErrCount, seq, err)
 	r.h264ErrLogAt = now
 	r.h264ErrCount = 0
 }

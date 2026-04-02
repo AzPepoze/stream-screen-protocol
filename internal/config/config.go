@@ -17,6 +17,7 @@ const (
 	CaptureBackendPortalPipewire CaptureBackend = "portal-pipewire"
 	CaptureBackendDDAGrab        CaptureBackend = "ddagrab"
 	CaptureBackendGDIGrab        CaptureBackend = "gdigrab"
+	CaptureBackendDXGI           CaptureBackend = "dxgi"
 )
 
 type ServerConfig struct {
@@ -238,7 +239,7 @@ func (c ServerConfig) EffectiveBackend() (CaptureBackend, error) {
 	case "linux":
 		return CaptureBackendPortalPipewire, nil
 	case "windows":
-		return CaptureBackendDDAGrab, nil
+		return CaptureBackendDXGI, nil
 	default:
 		return "", fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
 	}

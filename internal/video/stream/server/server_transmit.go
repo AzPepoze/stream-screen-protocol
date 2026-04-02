@@ -1,7 +1,7 @@
 package server
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"time"
 
 	"streamscreen/internal/video/stream"
@@ -13,7 +13,7 @@ func (s *Sender) transmitFrame(data []byte) {
 	s.destAddrMu.RUnlock()
 
 	if dest == nil {
-		log.Printf("Server: no client discovered, dropping frame")
+		logger.Info("Server: no client discovered, dropping frame")
 		return // No client discovered yet
 	}
 
@@ -22,7 +22,7 @@ func (s *Sender) transmitFrame(data []byte) {
 
 	totalPackets := uint32((len(data) + stream.CSPMaxPayloadSize - 1) / stream.CSPMaxPayloadSize)
 
-	log.Printf("Server: transmit frame=%d totalPackets=%d size=%d dest=%s", s.frameSeq, totalPackets, len(data), dest.String())
+	logger.Info("Server: transmit frame=%d totalPackets=%d size=%d dest=%s", s.frameSeq, totalPackets, len(data), dest.String())
 
 	// Build all packets first, then send in burst
 	packets := make([][]byte, totalPackets)
@@ -58,7 +58,7 @@ func (s *Sender) transmitFrame(data []byte) {
 	for _, packet := range packets {
 		_, err := s.conn.WriteToUDP(packet, dest)
 		if err != nil {
-			log.Printf("Server: write error frame=%d dest=%s err=%v", s.frameSeq, dest.String(), err)
+			logger.Info("Server: write error frame=%d dest=%s err=%v", s.frameSeq, dest.String(), err)
 		} else {
 			sentCount++
 		}

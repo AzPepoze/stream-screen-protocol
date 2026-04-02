@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"streamscreen/internal/logger"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,20 +62,20 @@ func main() {
 
 	cfg, err := config.LoadClient("client.config.json")
 	if err != nil {
-		log.Fatalf("load client config: %v", err)
+		logger.Error("load client config: %v", err)
 	}
-	log.Printf("loaded client.config.json")
+	logger.Info("loaded client.config.json")
 
-	log.Printf("starting internal custom protocol receiver")
+	logger.Info("starting internal custom protocol receiver")
 	receiver, err := client.NewClientReceiver(cfg)
 	if err != nil {
-		log.Fatalf("create client receiver: %v", err)
+		logger.Error("create client receiver: %v", err)
 	}
-	log.Printf("calling receiver.Start() - will block until server VideoInfo received")
+	logger.Info("calling receiver.Start() - will block until server VideoInfo received")
 	if err := receiver.Start(); err != nil {
-		log.Fatalf("start client receiver: %v", err)
+		logger.Error("start client receiver: %v", err)
 	}
-	log.Printf("receiver.Start() RETURNED successfully")
+	logger.Info("receiver.Start() RETURNED successfully")
 
 	frame := &sharedFrame{
 		state: stateStreaming,
@@ -82,16 +83,16 @@ func main() {
 
 	// Use server-provided resolution, not config defaults
 	w, h := receiver.GetVideoResolution()
-	log.Printf("receiver.GetVideoResolution() returned: %d x %d", w, h)
+	logger.Info("receiver.GetVideoResolution() returned: %d x %d", w, h)
 	windowWidth := int(w)
 	windowHeight := int(h)
 	if windowWidth <= 0 || windowHeight <= 0 {
 		// Fallback to config if for some reason server info unavailable
 		windowWidth = cfg.Window.Width
 		windowHeight = cfg.Window.Height
-		log.Printf("Resolution was <= 0, using config fallback: %d x %d", windowWidth, windowHeight)
+		logger.Info("Resolution was <= 0, using config fallback: %d x %d", windowWidth, windowHeight)
 	} else {
-		log.Printf("Using server resolution: %d x %d", windowWidth, windowHeight)
+		logger.Info("Using server resolution: %d x %d", windowWidth, windowHeight)
 	}
 
 	ebiten.SetWindowTitle(cfg.Window.Title)
@@ -116,12 +117,12 @@ func main() {
 		lastImgHeight: windowHeight,
 		targetTPS:     videoFPS,
 	}
-	log.Printf("[canvas] Created initial canvas: %dx%d", windowWidth, windowHeight)
+	logger.Info("[canvas] Created initial canvas: %dx%d", windowWidth, windowHeight)
 
 	err = ebiten.RunGame(g)
 	_ = receiver.Stop()
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("%v", err)
 	}
 }
 
@@ -138,13 +139,13 @@ func (g *game) Update() error {
 	targetW, targetH := int(w), int(h)
 
 	if g.renderFrames == 1 || g.renderFrames%60 == 0 {
-		log.Printf("[UPDATE] Frame=%d: Actual=%dx%d, Target=%dx%d, LastImg=%dx%d",
+		logger.Info("[UPDATE] Frame=%d: Actual=%dx%d, Target=%dx%d, LastImg=%dx%d",
 			g.renderFrames, actualW, actualH, targetW, targetH, g.lastImgWidth, g.lastImgHeight)
 	}
 
 	// If receiver has resolution but window is wrong size, fix it
 	if targetW > 0 && targetH > 0 && (actualW != targetW || actualH != targetH) {
-		log.Printf("[UPDATE] Window size mismatch! Setting to %dx%d (was %dx%d)", targetW, targetH, actualW, actualH)
+		logger.Info("[UPDATE] Window size mismatch! Setting to %dx%d (was %dx%d)", targetW, targetH, actualW, actualH)
 		ebiten.SetWindowSize(targetW, targetH)
 	}
 	if fps > 0 && fps != g.targetTPS {
@@ -168,7 +169,7 @@ func (g *game) Draw(screen *ebiten.Image) {
 		g.lastImgHeight = int(h)
 		// Also resize the window to match
 		ebiten.SetWindowSize(int(w), int(h))
-		log.Printf("[canvas] Updated canvas size to %dx%d", w, h)
+		logger.Info("[canvas] Updated canvas size to %dx%d", w, h)
 	}
 
 	if seq != g.lastSeq && len(pixels) > 0 {
@@ -187,7 +188,7 @@ func (g *game) Draw(screen *ebiten.Image) {
 			g.frame.lastFrameAt = time.Now()
 			g.frame.mu.Unlock()
 		} else if len(pixels) != expectedSize {
-			log.Printf("[draw] Pixel size mismatch: got %d bytes, expected %d (%dx%d*4)", len(pixels), expectedSize, g.lastImgWidth, g.lastImgHeight)
+			logger.Info("[draw] Pixel size mismatch: got %d bytes, expected %d (%dx%d*4)", len(pixels), expectedSize, g.lastImgWidth, g.lastImgHeight)
 		}
 	}
 

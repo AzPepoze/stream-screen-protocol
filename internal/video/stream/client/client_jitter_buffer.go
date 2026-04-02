@@ -1,7 +1,7 @@
 package client
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"sort"
 	"streamscreen/internal/video/stream"
 	"sync"
@@ -144,7 +144,7 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 	if jb.allowPartial && received >= jb.partialFrameReady {
 		data := jb.reassemble(fb)
 		delete(jb.frames, header.FrameSeq)
-		log.Printf("Client: block=%d ready %.0f%% (%d/%d packets)", header.FrameSeq, received*100, len(fb.packets), fb.totalPackets)
+		logger.Info("Client: block=%d ready %.0f%% (%d/%d packets)", header.FrameSeq, received*100, len(fb.packets), fb.totalPackets)
 		return data, header.FrameSeq
 	}
 
@@ -162,7 +162,7 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 				data := jb.reassemble(f)
 				delete(jb.frames, seq)
 				delete(jb.nackedFrames, seq)
-				log.Printf("Client: FORCE output frame=%d %.0f%% (%d/%d packets, %d missing)", seq, received*100, len(f.packets), f.totalPackets, len(missing))
+				logger.Info("Client: FORCE output frame=%d %.0f%% (%d/%d packets, %d missing)", seq, received*100, len(f.packets), f.totalPackets, len(missing))
 				return data, seq
 			}
 
@@ -170,7 +170,7 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 			if len(missing) > 0 {
 				lastNack, already := jb.nackedFrames[seq]
 				if !already || now.Sub(lastNack) > jb.nackRetryDelay {
-					log.Printf("Client: NACK request queued frame=%d missing=%d", seq, len(missing))
+					logger.Info("Client: NACK request queued frame=%d missing=%d", seq, len(missing))
 					jb.nackChan <- NACKRequest{FrameSeq: seq, PacketIDs: missing}
 					jb.nackedFrames[seq] = now
 				}

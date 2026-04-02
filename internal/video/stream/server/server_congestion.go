@@ -1,7 +1,7 @@
 package server
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"time"
 
 	"streamscreen/internal/video/stream"
@@ -51,7 +51,7 @@ func (s *Sender) applyControlFeedback(f stream.ControlFeedback) {
 	s.ccMu.Unlock()
 
 	if shouldLog {
-		log.Printf("[server] cc feedback: frame_q=%d%% audio_q=%d%% frame_drop=%d audio_drop=%d nacks=%d -> video_gap=%s audio_gap=%s",
+		logger.Info("[server] cc feedback: frame_q=%d%% audio_q=%d%% frame_drop=%d audio_drop=%d nacks=%d -> video_gap=%s audio_gap=%s",
 			f.FrameQueuePercent, f.AudioQueuePercent, f.FrameDrops, f.AudioDrops, f.NACKSent, videoGap, audioGap)
 	}
 }

@@ -9,6 +9,9 @@ const (
 	BackendAuto      = "auto"
 	BackendGStreamer = "gstreamer"
 	BackendFFmpeg    = "ffmpeg"
+	BackendAMF       = "amf"
+	BackendNVENC     = "nvenc"
+	BackendVAAPI     = "vaapi"
 )
 
 type Config map[string]interface{}
@@ -52,6 +55,12 @@ func normalizeBackend(v string) string {
 		return BackendGStreamer
 	case BackendFFmpeg:
 		return BackendFFmpeg
+	case BackendAMF:
+		return BackendAMF
+	case BackendNVENC:
+		return BackendNVENC
+	case BackendVAAPI:
+		return BackendVAAPI
 	default:
 		return ""
 	}

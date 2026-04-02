@@ -5,7 +5,7 @@ package capture
 import (
 	"context"
 	"fmt"
-	"log"
+	"streamscreen/internal/logger"
 
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
@@ -45,7 +45,7 @@ func (s *linuxSource) Start(ctx context.Context) error {
 	s.session = session
 
 	streamInfo := session.Streams[0]
-	log.Printf("capture(linux): portal stream_node=%d", streamInfo.NodeID)
+	logger.Info("capture(linux): portal stream_node=%d", streamInfo.NodeID)
 
 	pipelineStr := fmt.Sprintf(
 		"pipewiresrc fd=%d path=%d do-timestamp=true ! "+

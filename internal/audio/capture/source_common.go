@@ -21,7 +21,6 @@ type ffmpegSource struct {
 	cmdMu         sync.Mutex
 	cmd           *exec.Cmd
 	stdout        io.ReadCloser
-	readErrLogged bool
 }
 
 func newFFmpegSource(cfg config.ServerConfig, startCmd func() *exec.Cmd) (Source, error) {

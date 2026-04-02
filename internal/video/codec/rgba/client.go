@@ -2,7 +2,7 @@ package rgba
 
 import (
 	"fmt"
-	"log"
+	"streamscreen/internal/logger"
 	"sort"
 	"streamscreen/internal/video/stream"
 	"time"
@@ -43,7 +43,7 @@ func (p *ClientPipeline) HandleTilePacket(h stream.PacketHeader, buf []byte, set
 	// Extract payload (skip header)
 	payload := buf[stream.CSPHeaderSize:]
 	if len(payload) < 2 {
-		log.Printf("[rgba-client] Tile packet too small: %d bytes", len(payload))
+		logger.Info("[rgba-client] Tile packet too small: %d bytes", len(payload))
 		return fmt.Errorf("tile packet too small")
 	}
 
@@ -54,7 +54,7 @@ func (p *ClientPipeline) HandleTilePacket(h stream.PacketHeader, buf []byte, set
 		if err == nil {
 			setTileFunc(tileID, pixels)
 		} else {
-			log.Printf("[rgba-client] Failed to unmarshal tile: %v", err)
+			logger.Info("[rgba-client] Failed to unmarshal tile: %v", err)
 			return err
 		}
 		return nil
@@ -92,11 +92,11 @@ func (p *ClientPipeline) HandleTilePacket(h stream.PacketHeader, buf []byte, set
 				setTileFunc(tileID, pixels)
 				return nil
 			} else {
-				log.Printf("[rgba-client] FAILED: unmarshal reassembled tile: %v", err)
+				logger.Info("[rgba-client] FAILED: unmarshal reassembled tile: %v", err)
 				return err
 			}
 		} else {
-			log.Printf("[rgba-client] FAILED: reassemble returned nil")
+			logger.Info("[rgba-client] FAILED: reassemble returned nil")
 			return fmt.Errorf("reassemble returned nil")
 		}
 	}

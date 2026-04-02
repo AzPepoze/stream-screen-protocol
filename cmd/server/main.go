@@ -2,72 +2,77 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
-	"syscall"
-	"time"
-
 	"streamscreen/internal/config"
+	"streamscreen/internal/logger"
 	"streamscreen/internal/video/capture"
 	"streamscreen/internal/video/platform"
 	"streamscreen/internal/video/stream/server"
+	"syscall"
+	"time"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	cfg, err := config.LoadServer("server.config.json")
+	var cfgPath string
+	flag.StringVar(&cfgPath, "config", "server.config.json", "path to config file")
+	flag.Parse()
+
+	cfg, err := config.LoadServer(cfgPath)
 	if err != nil {
-		log.Fatalf("load server config: %v", err)
+		logger.Error("%v", err)
 	}
 
 	backend, err := platform.PrepareBackend(cfg)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("%v", err)
 	}
 	if err := platform.ValidateBackendRuntime(backend); err != nil {
-		log.Fatal(err)
+		logger.Error("%v", err)
 	}
 
 	destinationHost, err := cfg.DestinationHost()
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("%v", err)
 	}
 
-	log.Printf("loaded server.config.json")
-	log.Printf("backend=%s", backend)
-	log.Printf("bind=%s:%d destination=%s:%d", cfg.BindHost, cfg.Port, destinationHost, cfg.Port)
-	log.Printf("stream codec=%s capture=%dx%d@%dfps", cfg.Capture.Codec, cfg.Capture.Width, cfg.Capture.Height, cfg.Capture.FPS)
-	log.Printf("audio enabled=%t codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
+	logger.Info("loaded %s", cfgPath)
+	logger.Info("backend=%s", backend)
+	logger.Info("bind=%s:%d destination=%s:%d", cfg.BindHost, cfg.Port, destinationHost, cfg.Port)
+	logger.Info("stream codec=%s capture=%dx%d@%dfps", cfg.Capture.Codec, cfg.Capture.Width, cfg.Capture.Height, cfg.Capture.FPS)
+	logger.Info("audio enabled=%t codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
 		cfg.Audio.Enabled, cfg.Audio.Codec, cfg.Audio.SampleRate, cfg.Audio.Channels, cfg.Audio.FrameMS, cfg.Audio.BitrateKbps)
 
 	sender, err := server.NewSender(cfg, destinationHost)
 	if err != nil {
-		log.Fatalf("create server sender: %v", err)
+		logger.Error("create server sender: %v", err)
 	}
-	defer sender.Stop()
+	defer func() { _ = sender.Stop() }()
 	if err := sender.EnsureH264Pipeline(); err != nil {
-		log.Fatalf("h264 init failed: %v", err)
+		logger.Error("h264 init failed: %v", err)
 	}
 	sender.StartControlPlane()
 	if err := sender.StartAudio(); err != nil {
-		log.Fatalf("audio init failed: %v", err)
+		logger.Error("audio init failed: %v", err)
 	}
 
 	source, err := capture.New(cfg, backend)
 	if err != nil {
-		log.Fatalf("create capture source: %v", err)
+		logger.Error("create capture source: %v", err)
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := source.Start(ctx); err != nil {
-		log.Fatalf("start capture source: %v", err)
+		logger.Error("start capture source: %v", err)
 	}
 
-	log.Printf("internal custom protocol stream started")
+	logger.Info("internal custom protocol stream started")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -82,11 +87,11 @@ func main() {
 	for {
 		select {
 		case sig := <-sigCh:
-			log.Printf("received signal: %s", sig)
+			logger.Info("received signal: %s", sig)
 			return
 		case frame, ok := <-source.Frames():
 			if !ok {
-				log.Printf("capture source stopped")
+				logger.Info("capture source stopped")
 				return
 			}
 			sender.ProcessRGBAFrame(frame)
@@ -100,7 +105,7 @@ func main() {
 			capFPS := float64(capturedFrames-lastCapturedFrames) / elapsed
 			lastCapturedFrames = capturedFrames
 			lastStatsAt = now
-			log.Printf("capture stats frames=%d fps=%.1f", capturedFrames, capFPS)
+			logger.Info("capture stats frames=%d fps=%.1f", capturedFrames, capFPS)
 		}
 	}
 }

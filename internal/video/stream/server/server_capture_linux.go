@@ -4,7 +4,7 @@ package server
 
 import (
 	"fmt"
-	"log"
+	"streamscreen/internal/logger"
 
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
@@ -47,7 +47,7 @@ func (s *Sender) Start(pipewireFD int, nodeID uint32) error {
 	}
 
 	s.StartControlPlane()
-	log.Printf("[server] starting legacy linux capture pipeline")
+	logger.Info("[server] starting legacy linux capture pipeline")
 	return pipeline.SetState(gst.StatePlaying)
 }
 

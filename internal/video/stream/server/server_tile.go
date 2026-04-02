@@ -2,7 +2,7 @@ package server
 
 import (
 	"hash/crc32"
-	"log"
+	"streamscreen/internal/logger"
 	"sync"
 	"time"
 
@@ -53,7 +53,7 @@ func NewTileBuffer(gridSize, width, height int) *TileBuffer {
 // Returns list of changed tile IDs
 func (tb *TileBuffer) UpdateTiles(rgbaData []byte) []uint16 {
 	if len(rgbaData) != tb.frameWidth*tb.frameHeight*4 {
-		log.Printf("TileBuffer: wrong frame size: got %d, expected %d", len(rgbaData), tb.frameWidth*tb.frameHeight*4)
+		logger.Info("TileBuffer: wrong frame size: got %d, expected %d", len(rgbaData), tb.frameWidth*tb.frameHeight*4)
 		return nil
 	}
 

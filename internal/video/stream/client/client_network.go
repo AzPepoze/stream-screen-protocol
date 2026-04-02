@@ -1,7 +1,7 @@
 package client
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"streamscreen/internal/video/stream"
 	"sync/atomic"
 	"time"
@@ -14,11 +14,11 @@ func (r *ClientReceiver) joinLoop() {
 
 	packet := stream.MarshalJoin("")
 
-	log.Printf("Client: joinLoop() STARTING, will send JOIN to %s every 1s", r.serverAddr.String())
+	logger.Info("Client: joinLoop() STARTING, will send JOIN to %s every 1s", r.serverAddr.String())
 	for {
 		_ = r.conn.SetWriteDeadline(time.Time{})
 		if _, err := r.conn.WriteToUDP(packet, r.serverAddr); err != nil {
-			log.Printf("Client: joinLoop() JOIN write error: %v", err)
+			logger.Info("Client: joinLoop() JOIN write error: %v", err)
 		}
 
 		select {

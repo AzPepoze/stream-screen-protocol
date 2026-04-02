@@ -22,6 +22,8 @@ type windowsSource struct {
 
 func newSource(cfg config.ServerConfig, backend config.CaptureBackend) (Source, error) {
 	switch backend {
+	case config.CaptureBackendDXGI:
+		return newDXGISource(cfg)
 	case config.CaptureBackendDDAGrab, config.CaptureBackendGDIGrab:
 		return &windowsSource{cfg: cfg, backend: backend, frames: make(chan []byte, 8)}, nil
 	default:

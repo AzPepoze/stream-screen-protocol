@@ -1,7 +1,7 @@
 package client
 
 import (
-	"log"
+	"streamscreen/internal/logger"
 	"streamscreen/internal/video/stream"
 )
 
@@ -51,7 +51,7 @@ func (r *ClientReceiver) receiveLoop() {
 func (r *ClientReceiver) handleVideoInfo(buf []byte, n int) {
 	w, ht, fps, gridSize, codecName, err := stream.UnmarshalVideoInfo(buf[:n])
 	if err == nil {
-		log.Printf("Client: VideoInfo - %dx%d @ %d fps, gridSize=%d, codec=%s", w, ht, fps, gridSize, codecName)
+		logger.Info("Client: VideoInfo - %dx%d @ %d fps, gridSize=%d, codec=%s", w, ht, fps, gridSize, codecName)
 		r.videoInfoMu.Lock()
 		r.videoWidth = w
 		r.videoHeight = ht
@@ -67,7 +67,7 @@ func (r *ClientReceiver) handleAudioInfo(buf []byte, n int) {
 	sampleRate, channels, frameMS, bitrate, codecName, err := stream.UnmarshalAudioInfo(buf[:n])
 	if err == nil {
 		r.setAudioInfo(sampleRate, channels, frameMS, bitrate, codecName)
-		log.Printf("Client: AudioInfo - codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
+		logger.Info("Client: AudioInfo - codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
 			codecName, sampleRate, channels, frameMS, bitrate)
 	}
 }

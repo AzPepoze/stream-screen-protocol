@@ -3,7 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
-	"log"
+	"streamscreen/internal/logger"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -13,7 +13,7 @@ import (
 	"streamscreen/internal/audio/playback"
 	"streamscreen/internal/config"
 	videoh264 "streamscreen/internal/video/codec/h264"
-	"streamscreen/internal/video/codec/rgba"
+	"streamscreen/internal/video/codec/blocky"
 )
 
 // ClientReceiver handles jitter buffering, NACKs, and frame decoding.
@@ -40,7 +40,7 @@ type ClientReceiver struct {
 	videoFPS      uint32       // Received from server
 	codecName     string       // Codec type from server VideoInfo packet
 	videoInfoMu   sync.RWMutex // Protects video info
-	rgbaPipeline  *rgba.ClientPipeline
+	blockyPipeline  *blocky.ClientPipeline
 	h264Pipeline  *videoh264.ClientPipeline
 	h264ErrMu     sync.Mutex
 	h264ErrCount  uint64
@@ -127,14 +127,14 @@ func (r *ClientReceiver) Start() error {
 	go r.joinLoop()
 	go r.controlLoop()
 
-	log.Printf("Client: Start() waiting for server VideoInfo (timeout=30s)")
+	logger.Info("Client: Start() waiting for server VideoInfo (timeout=30s)")
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		r.videoInfoMu.RLock()
 		if r.videoWidth > 0 && r.videoHeight > 0 && r.videoFPS > 0 {
 			width, height, fps := r.videoWidth, r.videoHeight, r.videoFPS
 			r.videoInfoMu.RUnlock()
-			log.Printf("Client: Start() GOT server video info: %dx%d @ %d fps", width, height, fps)
+			logger.Info("Client: Start() GOT server video info: %dx%d @ %d fps", width, height, fps)
 
 			r.applyJitterTimingFromFPS(int(fps))
 
@@ -149,11 +149,11 @@ func (r *ClientReceiver) Start() error {
 			r.frameBufferMu.Unlock()
 
 			r.tileGrid = NewTileGrid(r.tileGridSize, int(width), int(height))
-			log.Printf("Client: initialized TileGrid %dx%d with %d tiles", r.tileGridSize, r.tileGridSize, r.tileGridSize*r.tileGridSize)
-			log.Printf("Client: initialized frame buffer: %d bytes", pixelSize)
+			logger.Info("Client: initialized TileGrid %dx%d with %d tiles", r.tileGridSize, r.tileGridSize, r.tileGridSize*r.tileGridSize)
+			logger.Info("Client: initialized frame buffer: %d bytes", pixelSize)
 
 			if r.currentCodecName() == "h264" {
-				log.Printf("Client: codec=h264, enabling H264 decode/render path")
+				logger.Info("Client: codec=h264, enabling H264 decode/render path")
 				if err := r.ensureH264Pipeline(); err != nil {
 					return err
 				}
@@ -165,7 +165,7 @@ func (r *ClientReceiver) Start() error {
 				return nil
 			}
 
-			r.rgbaPipeline = rgba.NewClientPipeline(nil)
+			r.blockyPipeline = blocky.NewClientPipeline(nil)
 			go r.appsrcLoop()
 			go r.tileRequestLoop()
 			go r.tileFrameReconstructionLoop()
