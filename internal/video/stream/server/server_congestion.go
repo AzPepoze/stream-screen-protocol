@@ -47,11 +47,29 @@ func (s *Sender) applyControlFeedback(addr *net.UDPAddr, f stream.ExtendedContro
 	audioGap := pressureToGap(pressure / 3)
 	viewer.setPacing(videoGap, audioGap)
 
-	if pressure >= 20 || f.FrameDrops > 0 || f.AudioDrops > 0 || f.NACKSent > 0 {
-		logger.Info("[server] viewer=%s cc pressure=%d frame_q=%d%% audio_q=%d%% loss=%.1f%% rtt=%dms jitter=%dms rate=%dkbps -> video_gap=%s audio_gap=%s",
+	// XOR parity is enabled only on the lossy viewer path. Smaller groups mean
+	// more redundancy: 1/16=6.25%, 1/8=12.5%, 1/4=25% before the small header.
+	fecGroupSize := fecGroupForLoss(f.LossPermille)
+	viewer.setFECGroupSize(fecGroupSize)
+
+	if pressure >= 20 || f.FrameDrops > 0 || f.AudioDrops > 0 || f.NACKSent > 0 || fecGroupSize > 0 {
+		logger.Info("[server] viewer=%s cc pressure=%d frame_q=%d%% audio_q=%d%% loss=%.1f%% rtt=%dms jitter=%dms rate=%dkbps -> video_gap=%s audio_gap=%s fec_group=%d",
 			addr.String(), pressure, f.FrameQueuePercent, f.AudioQueuePercent,
 			float64(f.LossPermille)/10.0, f.RTTMS, f.JitterMS, f.DeliveryRateKbps,
-			videoGap, audioGap)
+			videoGap, audioGap, fecGroupSize)
+	}
+}
+
+func fecGroupForLoss(lossPermille uint16) int {
+	switch {
+	case lossPermille < 5: // < 0.5%
+		return 0
+	case lossPermille < 20: // < 2%
+		return 16
+	case lossPermille < 50: // < 5%
+		return 8
+	default:
+		return 4
 	}
 }
 
