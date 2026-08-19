@@ -24,10 +24,12 @@ jobs:
           ffmpeg -version | head -n 1
           go test -count=1 -timeout 30s ./internal/video/codec/h264/backends/rtpffmpeg
       - name: Install media and UI build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
+          sudo -E apt-get update
+          sudo -E apt-get install -y --no-install-recommends \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             libopus-dev \
