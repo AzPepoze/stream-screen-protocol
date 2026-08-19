@@ -20,7 +20,11 @@ type Config struct {
 	FPS         int
 	Width       int
 	Height      int
-	ExtraArgs   []string
+	// GlobalArgs are inserted before the rawvideo input. Hardware-device
+	// options such as -vaapi_device need this position.
+	GlobalArgs []string
+	// ExtraArgs are inserted after encoder selection and before RTP output.
+	ExtraArgs []string
 }
 
 type Session struct {
@@ -74,6 +78,9 @@ func (s *Session) start() error {
 		"-hide_banner",
 		"-nostdin",
 		"-loglevel", "error",
+	}
+	args = append(args, s.cfg.GlobalArgs...)
+	args = append(args,
 		"-f", "rawvideo",
 		"-pix_fmt", s.cfg.InputFormat,
 		"-video_size", fmt.Sprintf("%dx%d", s.cfg.Width, s.cfg.Height),
@@ -81,7 +88,7 @@ func (s *Session) start() error {
 		"-i", "pipe:0",
 		"-an",
 		"-c:v", s.cfg.Codec,
-	}
+	)
 	args = append(args, s.cfg.ExtraArgs...)
 	args = append(args,
 		"-flush_packets", "1",
@@ -225,8 +232,6 @@ func (s *Session) readRTP() {
 			continue
 		}
 		if !haveTS || timestamp != currentTS {
-			// A timestamp transition without a marker should not normally happen
-			// on loopback. Drop the incomplete unit rather than mixing frames.
 			accessUnit = accessUnit[:0]
 			currentTS = timestamp
 			haveTS = true
