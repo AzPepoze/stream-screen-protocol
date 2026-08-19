@@ -16,12 +16,13 @@ import (
 	videoh264 "streamscreen/internal/video/codec/h264"
 )
 
-// ClientReceiver handles jitter buffering, NACKs, and frame decoding.
+// ClientReceiver handles jitter buffering, FEC recovery, NACKs, and frame decoding.
 type ClientReceiver struct {
 	cfg           config.ClientConfig
 	conn          *net.UDPConn
 	serverAddr    *net.UDPAddr
 	jitterBuffer  *JitterBuffer
+	fecRecoverer  *FECRecoverer
 	tileGrid      *TileGrid
 	tileFragBuf   map[string]*TileFragmentBuffer
 	tileFragBufMu sync.RWMutex
@@ -63,6 +64,7 @@ type ClientReceiver struct {
 	ccFrameDrops      uint64
 	ccAudioDrops      uint64
 	ccNACKSent        uint64
+	ccFECRecovered    uint64
 	ccPacketsReceived uint64
 	ccBytesReceived   uint64
 	ccRTTMS           uint32
@@ -97,19 +99,25 @@ func NewClientReceiver(cfg config.ClientConfig) (*ClientReceiver, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	maxLatency := time.Duration(cfg.Network.MaxLatencyMS) * time.Millisecond
 	jb := NewJitterBufferWithOptions(JitterBufferOptions{
-		MaxLatency:        time.Duration(cfg.Network.MaxLatencyMS) * time.Millisecond,
+		MaxLatency:        maxLatency,
 		LossTolerance:     0.1,
 		NackRetryDelay:    time.Duration(cfg.Network.NackRetryMS) * time.Millisecond,
 		PartialFrameReady: cfg.Network.PartialFrameReady,
 		AllowPartial:      cfg.Network.AllowPartial,
 		ForceOutput:       cfg.Network.ForceOutput,
 	})
+	fecMaxAge := maxLatency * 2
+	if fecMaxAge < 100*time.Millisecond {
+		fecMaxAge = 100 * time.Millisecond
+	}
 	return &ClientReceiver{
 		cfg:           cfg,
 		conn:          conn,
 		serverAddr:    serverAddr,
 		jitterBuffer:  jb,
+		fecRecoverer:  NewFECRecoverer(fecMaxAge),
 		tileFragBuf:   make(map[string]*TileFragmentBuffer),
 		ctx:           ctx,
 		cancel:        cancel,
