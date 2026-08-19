@@ -1,16 +1,17 @@
 package client
 
 import (
-	"streamscreen/internal/logger"
 	"sort"
-	"streamscreen/internal/video/stream"
 	"sync"
 	"time"
+
+	"streamscreen/internal/logger"
+	"streamscreen/internal/video/stream"
 )
 
-// TileBuffer stores a frame divided into tile regions for partial display
+// TileBuffer stores a frame divided into tile regions for partial display.
 type TileBuffer struct {
-	tiles      map[uint32][]byte // tile index -> pixel data
+	tiles      map[uint32][]byte
 	totalTiles uint32
 	width      int
 	height     int
@@ -25,9 +26,9 @@ type JitterBuffer struct {
 	maxLatency        time.Duration
 	lossTolerance     float64
 	nackChan          chan NACKRequest
-	nackedFrames      map[uint32]time.Time // Track which frames we've already NACKed
-	nackRetryDelay    time.Duration        // Minimum delay between NACKs for same frame
-	partialFrameReady float64              // Accept partial frames at this threshold (e.g., 0.8 = 80%)
+	nackedFrames      map[uint32]time.Time
+	nackRetryDelay    time.Duration
+	partialFrameReady float64
 	allowPartial      bool
 	forceOutput       bool
 }
@@ -61,7 +62,7 @@ func NewJitterBuffer(maxLatency time.Duration, lossTolerance float64) *JitterBuf
 	return NewJitterBufferWithOptions(JitterBufferOptions{
 		MaxLatency:        maxLatency,
 		LossTolerance:     lossTolerance,
-		NackRetryDelay:    20 * time.Millisecond,
+		NackRetryDelay:    8 * time.Millisecond,
 		PartialFrameReady: 0.98,
 		AllowPartial:      true,
 		ForceOutput:       true,
@@ -70,13 +71,13 @@ func NewJitterBuffer(maxLatency time.Duration, lossTolerance float64) *JitterBuf
 
 func NewJitterBufferWithOptions(opts JitterBufferOptions) *JitterBuffer {
 	if opts.MaxLatency <= 0 {
-		opts.MaxLatency = 200 * time.Millisecond
+		opts.MaxLatency = 80 * time.Millisecond
 	}
 	if opts.LossTolerance <= 0 {
 		opts.LossTolerance = 0.1
 	}
 	if opts.NackRetryDelay <= 0 {
-		opts.NackRetryDelay = 20 * time.Millisecond
+		opts.NackRetryDelay = 8 * time.Millisecond
 	}
 	if opts.PartialFrameReady <= 0 || opts.PartialFrameReady > 1 {
 		opts.PartialFrameReady = 0.98
@@ -126,61 +127,66 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 		jb.frames[header.FrameSeq] = fb
 	}
 
-	// Copy payload to avoid referencing the shared read buffer which
-	// is reused by subsequent ReadFromUDP calls.
 	cp := make([]byte, len(payload))
 	copy(cp, payload)
 	fb.packets[header.PacketID] = cp
 
-	// Check if frame is complete
 	if uint32(len(fb.packets)) == fb.totalPackets {
 		data := jb.reassemble(fb)
 		delete(jb.frames, header.FrameSeq)
+		delete(jb.nackedFrames, header.FrameSeq)
 		return data, header.FrameSeq
 	}
 
-	// Check if frame is "ready enough" (partial frame threshold)
 	received := float64(len(fb.packets)) / float64(fb.totalPackets)
 	if jb.allowPartial && received >= jb.partialFrameReady {
 		data := jb.reassemble(fb)
 		delete(jb.frames, header.FrameSeq)
+		delete(jb.nackedFrames, header.FrameSeq)
 		logger.Info("Client: block=%d ready %.0f%% (%d/%d packets)", header.FrameSeq, received*100, len(fb.packets), fb.totalPackets)
 		return data, header.FrameSeq
 	}
 
-	// Cleanup old frames and detect missing packets for NACKs
 	now := time.Now()
-	for seq, f := range jb.frames {
-		if now.Sub(f.receivedAt) > jb.maxLatency {
-			// Frame expired - force output it rather than drop
-			received := float64(len(f.packets)) / float64(f.totalPackets)
-			missing := jb.getMissing(f)
+	for seq, frame := range jb.frames {
+		age := now.Sub(frame.receivedAt)
+		missing := jb.getMissing(frame)
 
-			// Optionally output expired frames to prevent video freeze.
-			// Disabled for H264 to avoid decoding incomplete frames.
-			if jb.forceOutput && received > 0 {
-				data := jb.reassemble(f)
-				delete(jb.frames, seq)
-				delete(jb.nackedFrames, seq)
-				logger.Info("Client: FORCE output frame=%d %.0f%% (%d/%d packets, %d missing)", seq, received*100, len(f.packets), f.totalPackets, len(missing))
-				return data, seq
-			}
-
-			// Send NACK for this frame
-			if len(missing) > 0 {
-				lastNack, already := jb.nackedFrames[seq]
-				if !already || now.Sub(lastNack) > jb.nackRetryDelay {
-					logger.Info("Client: NACK request queued frame=%d missing=%d", seq, len(missing))
-					jb.nackChan <- NACKRequest{FrameSeq: seq, PacketIDs: missing}
+		// Request loss as soon as the initial/retry delay has elapsed. The old
+		// implementation waited until maxLatency before the first NACK, which
+		// made retransmission useless for high-refresh streaming.
+		if len(missing) > 0 && age >= jb.nackRetryDelay && age <= jb.maxLatency {
+			lastNACK, already := jb.nackedFrames[seq]
+			if !already || now.Sub(lastNACK) >= jb.nackRetryDelay {
+				request := NACKRequest{FrameSeq: seq, PacketIDs: missing}
+				select {
+				case jb.nackChan <- request:
 					jb.nackedFrames[seq] = now
+				default:
+					// Never block the packet receive path behind a saturated repair queue.
 				}
 			}
+		}
 
-			// If we give up on this frame (expired twice as long)
-			if now.Sub(f.receivedAt) > jb.maxLatency*2 {
-				delete(jb.frames, seq)
-				delete(jb.nackedFrames, seq)
-			}
+		if age <= jb.maxLatency {
+			continue
+		}
+
+		receivedRatio := float64(len(frame.packets)) / float64(frame.totalPackets)
+		if jb.forceOutput && receivedRatio > 0 {
+			data := jb.reassemble(frame)
+			delete(jb.frames, seq)
+			delete(jb.nackedFrames, seq)
+			logger.Info("Client: FORCE output frame=%d %.0f%% (%d/%d packets, %d missing)", seq, receivedRatio*100, len(frame.packets), frame.totalPackets, len(missing))
+			return data, seq
+		}
+
+		// Complete-frame codecs such as H.264 cannot decode a truncated access
+		// unit. Keep a short repair window, then discard it instead of letting
+		// stale frames accumulate behind current media.
+		if age > jb.maxLatency*2 {
+			delete(jb.frames, seq)
+			delete(jb.nackedFrames, seq)
 		}
 	}
 
@@ -198,7 +204,6 @@ func (jb *JitterBuffer) reassemble(fb *FrameBuffer) []byte {
 	for _, id := range ids {
 		totalLen += len(fb.packets[uint32(id)])
 	}
-
 	res := make([]byte, totalLen)
 	offset := 0
 	for _, id := range ids {
@@ -210,7 +215,7 @@ func (jb *JitterBuffer) reassemble(fb *FrameBuffer) []byte {
 }
 
 func (jb *JitterBuffer) getMissing(fb *FrameBuffer) []uint32 {
-	missing := []uint32{}
+	missing := make([]uint32, 0)
 	for i := uint32(0); i < fb.totalPackets; i++ {
 		if _, ok := fb.packets[i]; !ok {
 			missing = append(missing, i)
