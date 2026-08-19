@@ -1,0 +1,12 @@
+FROM golang:1.26-bookworm AS build
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY tests/netem/cmd/echo ./tests/netem/cmd/echo
+
+RUN CGO_ENABLED=0 go build -trimpath -o /out/netem-echo ./tests/netem/cmd/echo
+
+FROM debian:bookworm-slim
+COPY --from=build /out/netem-echo /usr/local/bin/netem-echo
+ENTRYPOINT ["/usr/local/bin/netem-echo"]
