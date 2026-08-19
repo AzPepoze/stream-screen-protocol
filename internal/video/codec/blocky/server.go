@@ -1,75 +1,59 @@
 package blocky
 
 import (
-	"streamscreen/internal/logger"
+	"fmt"
 	"net"
-	"streamscreen/internal/video/stream"
 	"time"
+
+	"streamscreen/internal/logger"
+	"streamscreen/internal/video/stream"
 )
 
-// TileGetter is an interface for getting tile data
+// TileGetter is an interface for getting tile data.
 type TileGetter interface {
 	GetTile(tileID uint16) []byte
 }
 
-// ServerPipeline handles RGBA tile-based delta encoding and transmission
+// ServerPipeline handles RGBA tile-based delta encoding and transmission.
 type ServerPipeline struct {
 	tileBuffer TileGetter
 	config     map[string]interface{}
 }
 
-// NewServerPipeline creates a new RGBA server pipeline
 func NewServerPipeline(tileBuffer TileGetter, cfg map[string]interface{}) *ServerPipeline {
 	if cfg == nil {
 		cfg = make(map[string]interface{})
 	}
-	return &ServerPipeline{
-		tileBuffer: tileBuffer,
-		config:     cfg,
-	}
+	return &ServerPipeline{tileBuffer: tileBuffer, config: cfg}
 }
 
-// SendTilesBurst sends all tiles in a single burst with per-tile fragmentation tracking
-func (p *ServerPipeline) SendTilesBurst(frameSeq uint32, tileIDs []uint16, conn *net.UDPConn, destAddr *net.UDPAddr) error {
-	return p.SendTilesBurstWithPacing(frameSeq, tileIDs, conn, destAddr, 0)
-}
-
-// SendTilesBurstWithPacing sends RGBA tile packets with optional per-packet pacing.
-func (p *ServerPipeline) SendTilesBurstWithPacing(frameSeq uint32, tileIDs []uint16, conn *net.UDPConn, destAddr *net.UDPAddr, packetGap time.Duration) error {
-	if len(tileIDs) == 0 {
-		return nil
+// BuildTilesBatch packetizes a set of tiles once. The returned byte slices are
+// immutable and can be shared across multiple viewer send queues.
+func (p *ServerPipeline) BuildTilesBatch(frameSeq uint32, tileIDs []uint16, timestamp uint32) ([][]byte, error) {
+	if len(tileIDs) == 0 || p.tileBuffer == nil {
+		return nil, nil
 	}
 
-	if p.tileBuffer == nil || conn == nil || destAddr == nil {
-		return nil
-	}
-
-	sentCount := 0
-
-	// Send each tile with its own fragment count
+	packets := make([][]byte, 0, len(tileIDs))
 	for _, tileID := range tileIDs {
 		tileData := p.tileBuffer.GetTile(tileID)
 		if len(tileData) == 0 {
 			continue
 		}
 
-		// Create tile packet
 		tilePacket := stream.MarshalTile(frameSeq, tileID, tileData)
-
-		// Calculate fragments for this specific tile only
 		totalTileFragments := uint32((len(tilePacket) + stream.CSPMaxPayloadSize - 1) / stream.CSPMaxPayloadSize)
+		if totalTileFragments == 0 {
+			continue
+		}
 
-		// Fragment this tile (each fragment numbered 0..N for THIS tile)
 		for offset, packetID := uint32(0), uint32(0); offset < uint32(len(tilePacket)); offset += uint32(stream.CSPMaxPayloadSize) {
 			end := offset + uint32(stream.CSPMaxPayloadSize)
 			if end > uint32(len(tilePacket)) {
 				end = uint32(len(tilePacket))
 			}
-
 			payload := tilePacket[offset:end]
 			packet := make([]byte, stream.CSPHeaderSize+len(payload))
-
-			// TotalPackets = fragments for THIS tile only (not frame total)
 			header := stream.PacketHeader{
 				Version:      stream.CSPVersion,
 				PacketType:   stream.CSPPacketTypeTile,
@@ -77,30 +61,39 @@ func (p *ServerPipeline) SendTilesBurstWithPacing(frameSeq uint32, tileIDs []uin
 				FrameSeq:     frameSeq,
 				PacketID:     packetID,
 				TotalPackets: totalTileFragments,
-				Timestamp:    0,
+				Timestamp:    timestamp,
 			}
 			header.Marshal(packet[:stream.CSPHeaderSize])
 			copy(packet[stream.CSPHeaderSize:], payload)
-
-			_, err := conn.WriteToUDP(packet, destAddr)
-			if err != nil {
-				logger.Info("[blocky-server] tile write error frame=%d tile=%d dest=%s err=%v",
-					frameSeq, tileID, destAddr.String(), err)
-				return err
-			}
-			if packetGap > 0 {
-				time.Sleep(packetGap)
-			}
-			sentCount++
-
+			packets = append(packets, packet)
 			packetID++
 		}
 	}
+	return packets, nil
+}
 
+func (p *ServerPipeline) SendTilesBurst(frameSeq uint32, tileIDs []uint16, conn *net.UDPConn, destAddr *net.UDPAddr) error {
+	return p.SendTilesBurstWithPacing(frameSeq, tileIDs, conn, destAddr, 0)
+}
+
+func (p *ServerPipeline) SendTilesBurstWithPacing(frameSeq uint32, tileIDs []uint16, conn *net.UDPConn, destAddr *net.UDPAddr, packetGap time.Duration) error {
+	if conn == nil || destAddr == nil {
+		return nil
+	}
+	packets, err := p.BuildTilesBatch(frameSeq, tileIDs, stream.NowTimestampMS())
+	if err != nil {
+		return err
+	}
+	for _, packet := range packets {
+		if _, err := conn.WriteToUDP(packet, destAddr); err != nil {
+			logger.Info("[blocky-server] write error frame=%d dest=%s err=%v", frameSeq, destAddr.String(), err)
+			return fmt.Errorf("blocky write: %w", err)
+		}
+		if packetGap > 0 {
+			time.Sleep(packetGap)
+		}
+	}
 	return nil
 }
 
-// Close closes the pipeline
-func (p *ServerPipeline) Close() error {
-	return nil
-}
+func (p *ServerPipeline) Close() error { return nil }
