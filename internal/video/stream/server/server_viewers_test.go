@@ -63,6 +63,63 @@ func TestBroadcastVideoBatchFansOutToTwoViewers(t *testing.T) {
 	}
 }
 
+func TestH264DoesNotRandomlyShedDependentFrames(t *testing.T) {
+	viewer := newViewerState(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20000})
+	viewer.congestionState = CongestionSeverelyCongested
+
+	s := &Sender{
+		viewers:       map[string]*viewerState{viewer.addr.String(): viewer},
+		frameDeadline: 100 * time.Millisecond,
+		clientTimeout: time.Second,
+		codecName:     "h264",
+	}
+
+	// A severe congestion state used to discard 75% of H264 AUs by frameSeq
+	// modulo. The H264 path must enqueue this P-frame while synchronized.
+	s.broadcastH264Batch([][]byte{[]byte("p-frame")}, 3, false)
+	if got := len(viewer.videoQ); got != 1 {
+		t.Fatalf("synchronized H264 viewer queue=%d want=1", got)
+	}
+}
+
+func TestH264ResyncWaitsForIDR(t *testing.T) {
+	viewer := newViewerState(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20001})
+	viewer.needsKeyframe = true
+	s := &Sender{
+		viewers:       map[string]*viewerState{viewer.addr.String(): viewer},
+		frameDeadline: 100 * time.Millisecond,
+		clientTimeout: time.Second,
+		codecName:     "h264",
+	}
+
+	s.broadcastH264Batch([][]byte{[]byte("dependent")}, 10, false)
+	if got := len(viewer.videoQ); got != 0 {
+		t.Fatalf("dependent frame enqueued during resync: %d", got)
+	}
+
+	s.broadcastH264Batch([][]byte{[]byte("idr")}, 11, true)
+	if got := len(viewer.videoQ); got != 1 {
+		t.Fatalf("IDR not enqueued during resync: %d", got)
+	}
+	viewer.mu.RLock()
+	needs := viewer.needsKeyframe
+	viewer.mu.RUnlock()
+	if needs {
+		t.Fatal("viewer remained in keyframe-wait state after IDR enqueue")
+	}
+}
+
+func TestH264AccessUnitIDRDetection(t *testing.T) {
+	idr := []byte{0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x65, 9, 9}
+	if !h264AccessUnitHasIDR(idr) {
+		t.Fatal("failed to detect Annex-B IDR NAL")
+	}
+	pframe := []byte{0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x41, 9, 9}
+	if h264AccessUnitHasIDR(pframe) {
+		t.Fatal("P-frame access unit incorrectly detected as IDR")
+	}
+}
+
 func TestFECGroupForLoss(t *testing.T) {
 	cases := []struct {
 		loss  uint16
@@ -75,8 +132,8 @@ func TestFECGroupForLoss(t *testing.T) {
 		{19, CongestionHealthy, 16},
 		{20, CongestionHealthy, 8},
 		{49, CongestionHealthy, 8},
-		{50, CongestionHealthy, 4},
-		{100, CongestionHealthy, 4},
+		{50, CongestionHealthy, 8},
+		{100, CongestionHealthy, 8},
 		{100, CongestionCongested, 8},
 		{100, CongestionSeverelyCongested, 8},
 		{40, CongestionSeverelyCongested, 0},
