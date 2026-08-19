@@ -33,6 +33,16 @@ func (p *ServerPipeline) ForceKeyframe() error {
 	return nil
 }
 
+func (p *ServerPipeline) SetBitrateKbps(bitrate int) error {
+	if p.encoder == nil {
+		return fmt.Errorf("encoder not initialized")
+	}
+	if adjuster, ok := p.encoder.(BitrateAdjuster); ok {
+		return adjuster.SetBitrateKbps(bitrate)
+	}
+	return nil
+}
+
 func (p *ServerPipeline) Close() error {
 	if p.encoder != nil {
 		return p.encoder.Close()
