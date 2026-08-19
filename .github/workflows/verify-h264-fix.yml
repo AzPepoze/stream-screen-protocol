@@ -1,0 +1,58 @@
+name: Verify H264 congestion fix
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "internal/video/stream/**"
+      - "internal/video/codec/h264/**"
+      - ".github/workflows/verify-h264-fix.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxxf86vm-dev
+
+      - name: Test stream and H264 packages
+        run: go test -tags "nolibopusfile" ./internal/video/stream/... ./internal/video/codec/h264/...
+
+      - name: Race test stream packages
+        run: go test -race -tags "nolibopusfile" ./internal/video/stream/...
+
+      - name: Build server and client
+        run: |
+          go build -tags "nolibopusfile" -o /tmp/csp-server ./cmd/server
+          go build -tags "nolibopusfile" -o /tmp/csp-client ./cmd/client
