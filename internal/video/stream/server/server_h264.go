@@ -77,8 +77,36 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 		packets = append(packets, buf)
 	}
 
-	s.broadcastVideoBatch(packets, frameSeq)
+	s.broadcastH264Batch(packets, frameSeq, h264AccessUnitHasIDR(encodedData))
 	return nil
+}
+
+// h264AccessUnitHasIDR checks an Annex-B access unit for a type-5 NAL. The
+// server uses this only for transport resynchronization: after a viewer queue
+// overrun, dependent P frames are skipped until a real decoder recovery point
+// can be delivered intact.
+func h264AccessUnitHasIDR(data []byte) bool {
+	for i := 0; i+4 < len(data); {
+		start := -1
+		startCodeLen := 0
+		if i+3 < len(data) && data[i] == 0 && data[i+1] == 0 && data[i+2] == 1 {
+			start = i
+			startCodeLen = 3
+		} else if i+4 < len(data) && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1 {
+			start = i
+			startCodeLen = 4
+		}
+		if start < 0 {
+			i++
+			continue
+		}
+		nal := start + startCodeLen
+		if nal < len(data) && data[nal]&0x1f == 5 {
+			return true
+		}
+		i = nal + 1
+	}
+	return false
 }
 
 func (s *Sender) CloseH264Pipeline() error {
