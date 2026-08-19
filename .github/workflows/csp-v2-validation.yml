@@ -15,10 +15,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install media build dependencies
+      - name: Install media and UI build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libopus-dev
+          sudo apt-get install -y \
+            ffmpeg \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libopus-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxxf86vm-dev
       - name: Run tests
         run: go test -tags nolibopusfile ./...
       - name: Build Linux
