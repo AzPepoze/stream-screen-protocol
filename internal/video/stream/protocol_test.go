@@ -5,22 +5,20 @@ import (
 	"testing"
 )
 
-func TestExtendedControlFeedbackRoundTrip(t *testing.T) {
-	want := ExtendedControlFeedback{
-		ControlFeedback: ControlFeedback{
-			FrameQueuePercent: 42,
-			AudioQueuePercent: 7,
-			FrameDrops:        3,
-			AudioDrops:        1,
-			NACKSent:          9,
-		},
+func TestControlFeedbackRoundTrip(t *testing.T) {
+	want := ControlFeedback{
+		FrameQueuePercent:    42,
+		AudioQueuePercent:    7,
 		RTTMS:                55,
+		FrameDrops:           3,
+		AudioDrops:           1,
+		NACKSent:             9,
 		JitterMS:             6,
 		LossPermille:         27,
 		ResidualLossPermille: 12,
 		DeliveryRateKbps:     18432,
 	}
-	got, err := UnmarshalExtendedControlFeedback(MarshalExtendedControlFeedback(want))
+	got, err := UnmarshalControlFeedback(MarshalControlFeedback(want))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,19 +27,19 @@ func TestExtendedControlFeedbackRoundTrip(t *testing.T) {
 	}
 }
 
-func TestExtendedControlFeedbackMalformedPayloads(t *testing.T) {
-	valid := MarshalExtendedControlFeedback(ExtendedControlFeedback{
-		ControlFeedback: ControlFeedback{FrameQueuePercent: 50},
-		RTTMS:           30,
+func TestControlFeedbackMalformedPayloads(t *testing.T) {
+	valid := MarshalControlFeedback(ControlFeedback{
+		FrameQueuePercent: 50,
+		RTTMS:             30,
 	})
 
 	// 1. Buffer smaller than CSPHeaderSize
-	if _, err := UnmarshalExtendedControlFeedback(valid[:CSPHeaderSize-1]); err == nil {
+	if _, err := UnmarshalControlFeedback(valid[:CSPHeaderSize-1]); err == nil {
 		t.Fatal("expected error on buffer smaller than CSP header")
 	}
 
 	// 2. Buffer smaller than CSPHeaderSize + ControlFeedbackPayloadSize
-	if _, err := UnmarshalExtendedControlFeedback(valid[:len(valid)-1]); err == nil {
+	if _, err := UnmarshalControlFeedback(valid[:len(valid)-1]); err == nil {
 		t.Fatal("expected error on truncated payload")
 	}
 
@@ -49,7 +47,7 @@ func TestExtendedControlFeedbackMalformedPayloads(t *testing.T) {
 	wrongVer := make([]byte, len(valid))
 	copy(wrongVer, valid)
 	wrongVer[0] = 99
-	if _, err := UnmarshalExtendedControlFeedback(wrongVer); err == nil {
+	if _, err := UnmarshalControlFeedback(wrongVer); err == nil {
 		t.Fatal("expected error on mismatched protocol version")
 	}
 
@@ -57,7 +55,7 @@ func TestExtendedControlFeedbackMalformedPayloads(t *testing.T) {
 	wrongType := make([]byte, len(valid))
 	copy(wrongType, valid)
 	wrongType[1] = CSPPacketTypeData
-	if _, err := UnmarshalExtendedControlFeedback(wrongType); err == nil {
+	if _, err := UnmarshalControlFeedback(wrongType); err == nil {
 		t.Fatal("expected error on wrong packet type")
 	}
 }
@@ -113,7 +111,6 @@ func TestKeyframeRequestRoundTrip(t *testing.T) {
 		t.Fatalf("expected reason %q, got %q", reason, gotReason)
 	}
 }
-
 
 func TestBuildXORFECFromDataPackets(t *testing.T) {
 	payloads := [][]byte{{1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}}

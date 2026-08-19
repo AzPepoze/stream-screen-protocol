@@ -7,7 +7,7 @@ import (
 	"streamscreen/internal/video/stream"
 )
 
-func (s *Sender) applyControlFeedback(addr *net.UDPAddr, f stream.ExtendedControlFeedback) {
+func (s *Sender) applyControlFeedback(addr *net.UDPAddr, f stream.ControlFeedback) {
 	viewer := s.touchViewer(addr)
 	if viewer == nil {
 		return
@@ -63,7 +63,7 @@ func (s *Sender) applyControlFeedback(addr *net.UDPAddr, f stream.ExtendedContro
 	}
 }
 
-func evaluateCongestionState(current CongestionState, f stream.ExtendedControlFeedback, healthyRounds *int) CongestionState {
+func evaluateCongestionState(current CongestionState, f stream.ControlFeedback, healthyRounds *int) CongestionState {
 	// Fast escalation to protect queue and network
 	if f.FrameDrops > 0 || f.FrameQueuePercent >= 75 || f.LossPermille >= 150 {
 		*healthyRounds = 0

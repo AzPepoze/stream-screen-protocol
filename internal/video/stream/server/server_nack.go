@@ -68,7 +68,7 @@ func (s *Sender) listenForNACKs() {
 				}
 
 			case stream.CSPPacketTypeControl:
-				feedback, err := stream.UnmarshalExtendedControlFeedback(buf[:n])
+				feedback, err := stream.UnmarshalControlFeedback(buf[:n])
 				if err != nil {
 					logger.Info("server", "invalid control feedback from %s: %v", addr.String(), err)
 					continue

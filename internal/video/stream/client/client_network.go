@@ -94,20 +94,18 @@ func (r *ClientReceiver) controlLoop() {
 				rtt = uint32(^uint16(0))
 			}
 
-			feedback := stream.ExtendedControlFeedback{
-				ControlFeedback: stream.ControlFeedback{
-					FrameQueuePercent: queuePercent(len(r.frameChan), cap(r.frameChan)),
-					AudioQueuePercent: queuePercent(len(r.audioFrames), cap(r.audioFrames)),
-					FrameDrops:        uint32(atomic.SwapUint64(&r.ccFrameDrops, 0)),
-					AudioDrops:        uint32(atomic.SwapUint64(&r.ccAudioDrops, 0)),
-					NACKSent:          uint32(nackIDs),
-				},
+			feedback := stream.ControlFeedback{
+				FrameQueuePercent:    queuePercent(len(r.frameChan), cap(r.frameChan)),
+				AudioQueuePercent:    queuePercent(len(r.audioFrames), cap(r.audioFrames)),
 				RTTMS:                uint16(rtt),
+				FrameDrops:           uint32(atomic.SwapUint64(&r.ccFrameDrops, 0)),
+				AudioDrops:           uint32(atomic.SwapUint64(&r.ccAudioDrops, 0)),
+				NACKSent:             uint32(nackIDs),
 				LossPermille:         rawLossPermille,
-				DeliveryRateKbps:     uint32(deliveryKbps),
 				ResidualLossPermille: residualLossPermille,
+				DeliveryRateKbps:     uint32(deliveryKbps),
 			}
-			_, _ = r.conn.WriteToUDP(stream.MarshalExtendedControlFeedback(feedback), r.serverAddr)
+			_, _ = r.conn.WriteToUDP(stream.MarshalControlFeedback(feedback), r.serverAddr)
 		}
 	}
 }

@@ -13,9 +13,9 @@ func TestCongestionStateTransitionsAndHysteresis(t *testing.T) {
 	healthyRounds := 0
 
 	// 1. Mild queue occupancy -> Constrained
-	f1 := stream.ExtendedControlFeedback{
-		ControlFeedback: stream.ControlFeedback{FrameQueuePercent: 30},
-		LossPermille:     10,
+	f1 := stream.ControlFeedback{
+		FrameQueuePercent: 30,
+		LossPermille:      10,
 	}
 	state = evaluateCongestionState(state, f1, &healthyRounds)
 	if state != CongestionConstrained {
@@ -26,9 +26,9 @@ func TestCongestionStateTransitionsAndHysteresis(t *testing.T) {
 	}
 
 	// 2. High loss & queue -> Congested
-	f2 := stream.ExtendedControlFeedback{
-		ControlFeedback: stream.ControlFeedback{FrameQueuePercent: 55},
-		LossPermille:     65,
+	f2 := stream.ControlFeedback{
+		FrameQueuePercent: 55,
+		LossPermille:      65,
 	}
 	state = evaluateCongestionState(state, f2, &healthyRounds)
 	if state != CongestionCongested {
@@ -36,9 +36,10 @@ func TestCongestionStateTransitionsAndHysteresis(t *testing.T) {
 	}
 
 	// 3. Drops -> SeverelyCongested
-	f3 := stream.ExtendedControlFeedback{
-		ControlFeedback: stream.ControlFeedback{FrameDrops: 1, FrameQueuePercent: 80},
-		LossPermille:     160,
+	f3 := stream.ControlFeedback{
+		FrameDrops:        1,
+		FrameQueuePercent: 80,
+		LossPermille:      160,
 	}
 	state = evaluateCongestionState(state, f3, &healthyRounds)
 	if state != CongestionSeverelyCongested {
@@ -46,9 +47,10 @@ func TestCongestionStateTransitionsAndHysteresis(t *testing.T) {
 	}
 
 	// 4. Healthy feedback: 1st round should NOT immediately jump to Healthy (hysteresis)
-	fHealthy := stream.ExtendedControlFeedback{
-		ControlFeedback: stream.ControlFeedback{FrameQueuePercent: 5, FrameDrops: 0},
-		LossPermille:     0,
+	fHealthy := stream.ControlFeedback{
+		FrameQueuePercent: 5,
+		FrameDrops:        0,
+		LossPermille:      0,
 	}
 	state = evaluateCongestionState(state, fHealthy, &healthyRounds)
 	if state != CongestionSeverelyCongested {
