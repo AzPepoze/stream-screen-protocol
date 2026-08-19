@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"streamscreen/internal/video/stream"
 )
 
 type mediaClass uint8
@@ -25,10 +27,11 @@ type packetBatch struct {
 type viewerState struct {
 	addr *net.UDPAddr
 
-	mu       sync.RWMutex
-	lastSeen time.Time
-	videoGap time.Duration
-	audioGap time.Duration
+	mu           sync.RWMutex
+	lastSeen     time.Time
+	videoGap     time.Duration
+	audioGap     time.Duration
+	fecGroupSize int
 
 	videoQ  chan packetBatch
 	audioQ  chan packetBatch
@@ -68,6 +71,18 @@ func (v *viewerState) setPacing(videoGap, audioGap time.Duration) {
 	v.videoGap = videoGap
 	v.audioGap = audioGap
 	v.mu.Unlock()
+}
+
+func (v *viewerState) setFECGroupSize(groupSize int) {
+	v.mu.Lock()
+	v.fecGroupSize = groupSize
+	v.mu.Unlock()
+}
+
+func (v *viewerState) fecGroup() int {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.fecGroupSize
 }
 
 func (v *viewerState) pacing(class mediaClass) time.Duration {
@@ -180,13 +195,34 @@ func enqueueLatest(ch chan packetBatch, batch packetBatch) {
 	}
 }
 
+// broadcastVideoBatch keeps the encoded DATA packets shared between viewers,
+// while adding parity only for viewers whose measured loss warrants it.
 func (s *Sender) broadcastVideoBatch(packets [][]byte, frameSeq uint32) {
 	if len(packets) == 0 {
 		return
 	}
 	deadline := time.Now().Add(s.frameDeadline)
-	batch := packetBatch{packets: packets, class: mediaVideo, frameSeq: frameSeq, deadline: deadline}
+	fecCache := make(map[int][][]byte)
 	for _, viewer := range s.activeViewers() {
+		viewerPackets := packets
+		groupSize := viewer.fecGroup()
+		if groupSize >= 2 {
+			augmented, ok := fecCache[groupSize]
+			if !ok {
+				fecPackets, err := stream.BuildXORFEC(packets, groupSize)
+				if err == nil && len(fecPackets) > 0 {
+					augmented = make([][]byte, 0, len(packets)+len(fecPackets))
+					augmented = append(augmented, packets...)
+					augmented = append(augmented, fecPackets...)
+				} else {
+					augmented = packets
+				}
+				fecCache[groupSize] = augmented
+			}
+			viewerPackets = augmented
+		}
+
+		batch := packetBatch{packets: viewerPackets, class: mediaVideo, frameSeq: frameSeq, deadline: deadline}
 		before := len(viewer.videoQ)
 		enqueueLatest(viewer.videoQ, batch)
 		if before == cap(viewer.videoQ) {
@@ -238,8 +274,6 @@ func (s *Sender) enqueueRepair(addr *net.UDPAddr, packets [][]byte, frameSeq uin
 
 func (s *Sender) viewerSendLoop(viewer *viewerState) {
 	for {
-		// Control recovery and audio are checked first so stale video never
-		// blocks audio or a useful repair packet.
 		select {
 		case <-s.ctx.Done():
 			return
