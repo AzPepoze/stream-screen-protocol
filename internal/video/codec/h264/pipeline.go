@@ -54,6 +54,36 @@ func NewClientPipeline(cfg Config) (*ClientPipeline, error) {
 	return &ClientPipeline{decoder: dec, config: cfg}, nil
 }
 
+func NewClientPipelineWithDecoder(dec Decoder, cfg Config) (*ClientPipeline, error) {
+	if dec == nil {
+		return nil, fmt.Errorf("decoder cannot be nil")
+	}
+	return &ClientPipeline{decoder: dec, config: cfg}, nil
+}
+
+func (p *ClientPipeline) SetOutputHandler(handler FrameHandler) {
+	if p.decoder == nil {
+		return
+	}
+	if sd, ok := p.decoder.(StreamingDecoder); ok {
+		sd.SetOutputHandler(handler)
+	}
+}
+
+func (p *ClientPipeline) PushFrame(h264Data []byte, width, height int) error {
+	if p.decoder == nil {
+		return fmt.Errorf("decoder not initialized")
+	}
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("video dimensions not set")
+	}
+	if sd, ok := p.decoder.(StreamingDecoder); ok {
+		return sd.Push(h264Data, width, height)
+	}
+	_, err := p.decoder.Decode(h264Data, width, height)
+	return err
+}
+
 func (p *ClientPipeline) HandleFrame(h264Data []byte, width, height int) ([]byte, error) {
 	if p.decoder == nil {
 		return nil, fmt.Errorf("decoder not initialized")

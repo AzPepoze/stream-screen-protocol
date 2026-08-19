@@ -28,4 +28,10 @@ func (d *Decoder) Decode(_ []byte, _, _ int) ([]byte, error) {
 	return nil, fmt.Errorf("gstreamer h264 decoder backend is unavailable")
 }
 
+func (d *Decoder) Push(_ []byte, _, _ int) error {
+	return fmt.Errorf("gstreamer h264 decoder backend is unavailable")
+}
+
+func (d *Decoder) SetOutputHandler(_ func([]byte, int, int)) {}
+
 func (d *Decoder) Close() error { return nil }

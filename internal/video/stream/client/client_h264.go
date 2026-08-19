@@ -2,10 +2,12 @@ package client
 
 import (
 	"fmt"
+	"sync/atomic"
+
 	videoh264 "streamscreen/internal/video/codec/h264"
 )
 
-// HandleH264Frame decodes H264 packet data and stores decoded RGBA
+// HandleH264Frame pushes H264 packet data into the decoder asynchronously
 func (r *ClientReceiver) HandleH264Frame(h264Data []byte) error {
 	if err := r.ensureH264Pipeline(); err != nil {
 		return err
@@ -21,22 +23,8 @@ func (r *ClientReceiver) HandleH264Frame(h264Data []byte) error {
 		return fmt.Errorf("video dimensions not set")
 	}
 
-	// Decode H264 frame to RGBA
-	rgbaData, err := r.h264Pipeline.HandleFrame(h264Data, width, height)
-	if err != nil {
-		return err
-	}
-
-	// Store decoded frame
-	r.pixelsMu.Lock()
-	defer r.pixelsMu.Unlock()
-
-	// Save current to previous before updating
-	copy(r.prevPixels, rgbaData)
-	copy(r.pixels, rgbaData)
-	r.frameSeq++
-
-	return nil
+	// Push H264 frame non-blockingly into the decoder
+	return r.h264Pipeline.PushFrame(h264Data, width, height)
 }
 
 func (r *ClientReceiver) ensureH264Pipeline() error {
@@ -58,8 +46,54 @@ func (r *ClientReceiver) ensureH264Pipeline() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize h264 pipeline: %w", err)
 	}
+
+	r.h264DecodedFrames = make(chan []byte, 2)
+	pipeline.SetOutputHandler(func(rgbaData []byte, width, height int) {
+		expectedSize := width * height * 4
+		if len(rgbaData) != expectedSize {
+			return
+		}
+		select {
+		case r.h264DecodedFrames <- rgbaData:
+		default:
+			// Queue full: drop oldest frame to maintain lowest latency and latest-frame semantics
+			select {
+			case <-r.h264DecodedFrames:
+				atomic.AddUint64(&r.ccDecodedDrops, 1)
+			default:
+			}
+			select {
+			case r.h264DecodedFrames <- rgbaData:
+			default:
+				atomic.AddUint64(&r.ccDecodedDrops, 1)
+			}
+		}
+	})
+
 	r.h264Pipeline = pipeline
 	return nil
+}
+
+// h264OutputLoop consumes decoded RGBA frames asynchronously on a dedicated client-owned loop
+func (r *ClientReceiver) h264OutputLoop() {
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case rgbaData, ok := <-r.h264DecodedFrames:
+			if !ok {
+				return
+			}
+			r.pixelsMu.Lock()
+			if len(r.pixels) == len(rgbaData) {
+				copy(r.prevPixels, r.pixels)
+				copy(r.pixels, rgbaData)
+				r.frameSeq++
+				atomic.AddUint64(&r.ccDecodedFrames, 1)
+			}
+			r.pixelsMu.Unlock()
+		}
+	}
 }
 
 // CloseH264Pipeline stops the H264 pipeline

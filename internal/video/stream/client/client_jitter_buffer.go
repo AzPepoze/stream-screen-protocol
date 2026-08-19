@@ -19,6 +19,18 @@ type TileBuffer struct {
 	tileHeight int
 }
 
+type LossObserver interface {
+	OnUniqueMissingDetected(count int)
+	OnMissingRecoveredByNACK(count int)
+	OnMissingRecoveredByFEC(count int)
+	OnMissingUnrecovered(count int)
+}
+
+type packetKey struct {
+	frameSeq uint32
+	packetID uint32
+}
+
 // JitterBuffer reassembles packets into frames and handles missing data.
 type JitterBuffer struct {
 	mu                sync.Mutex
@@ -31,6 +43,8 @@ type JitterBuffer struct {
 	partialFrameReady float64
 	allowPartial      bool
 	forceOutput       bool
+	lossObserver      LossObserver
+	activeMissing     map[packetKey]struct{}
 }
 
 type FrameBuffer struct {
@@ -56,6 +70,7 @@ type JitterBufferOptions struct {
 	PartialFrameReady float64
 	AllowPartial      bool
 	ForceOutput       bool
+	LossObserver      LossObserver
 }
 
 func NewJitterBuffer(maxLatency time.Duration, lossTolerance float64) *JitterBuffer {
@@ -92,6 +107,26 @@ func NewJitterBufferWithOptions(opts JitterBufferOptions) *JitterBuffer {
 		partialFrameReady: opts.PartialFrameReady,
 		allowPartial:      opts.AllowPartial,
 		forceOutput:       opts.ForceOutput,
+		lossObserver:      opts.LossObserver,
+		activeMissing:     make(map[packetKey]struct{}),
+	}
+}
+
+func (jb *JitterBuffer) SetLossObserver(obs LossObserver) {
+	jb.mu.Lock()
+	defer jb.mu.Unlock()
+	jb.lossObserver = obs
+}
+
+func (jb *JitterBuffer) MarkRecoveredByFEC(frameSeq, packetID uint32) {
+	jb.mu.Lock()
+	defer jb.mu.Unlock()
+	key := packetKey{frameSeq: frameSeq, packetID: packetID}
+	if _, ok := jb.activeMissing[key]; ok {
+		delete(jb.activeMissing, key)
+		if jb.lossObserver != nil {
+			jb.lossObserver.OnMissingRecoveredByFEC(1)
+		}
 	}
 }
 
@@ -114,6 +149,7 @@ func (jb *JitterBuffer) Flush() {
 	defer jb.mu.Unlock()
 	jb.frames = make(map[uint32]*FrameBuffer)
 	jb.nackedFrames = make(map[uint32]time.Time)
+	jb.activeMissing = make(map[packetKey]struct{})
 }
 
 func (jb *JitterBuffer) ConfigureTiming(maxLatency, nackRetryDelay time.Duration) {
@@ -131,6 +167,14 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 	jb.mu.Lock()
 	defer jb.mu.Unlock()
 
+	key := packetKey{frameSeq: header.FrameSeq, packetID: header.PacketID}
+	if _, ok := jb.activeMissing[key]; ok {
+		delete(jb.activeMissing, key)
+		if jb.lossObserver != nil {
+			jb.lossObserver.OnMissingRecoveredByNACK(1)
+		}
+	}
+
 	fb, ok := jb.frames[header.FrameSeq]
 	if !ok {
 		fb = &FrameBuffer{
@@ -145,10 +189,27 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 	copy(cp, payload)
 	fb.packets[header.PacketID] = cp
 
+	// Track newly detected missing packets for this frame
+	for i := uint32(0); i < header.TotalPackets; i++ {
+		if _, have := fb.packets[i]; !have {
+			mKey := packetKey{frameSeq: header.FrameSeq, packetID: i}
+			if _, tracked := jb.activeMissing[mKey]; !tracked {
+				jb.activeMissing[mKey] = struct{}{}
+				if jb.lossObserver != nil {
+					jb.lossObserver.OnUniqueMissingDetected(1)
+				}
+			}
+		}
+	}
+
+	now := time.Now()
+
 	if uint32(len(fb.packets)) == fb.totalPackets {
 		data := jb.reassemble(fb)
 		delete(jb.frames, header.FrameSeq)
 		delete(jb.nackedFrames, header.FrameSeq)
+		jb.cleanActiveMissingForFrame(header.FrameSeq)
+		jb.checkPendingFrames(now, header.FrameSeq)
 		return data, header.FrameSeq
 	}
 
@@ -157,18 +218,24 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 		data := jb.reassemble(fb)
 		delete(jb.frames, header.FrameSeq)
 		delete(jb.nackedFrames, header.FrameSeq)
+		jb.cleanActiveMissingForFrame(header.FrameSeq)
 		logger.Info("client", "block=%d ready %.0f%% (%d/%d packets)", header.FrameSeq, received*100, len(fb.packets), fb.totalPackets)
+		jb.checkPendingFrames(now, header.FrameSeq)
 		return data, header.FrameSeq
 	}
 
-	now := time.Now()
+	return jb.checkPendingFrames(now, 0)
+}
+
+func (jb *JitterBuffer) checkPendingFrames(now time.Time, excludeSeq uint32) ([]byte, uint32) {
 	for seq, frame := range jb.frames {
+		if seq == excludeSeq {
+			continue
+		}
 		age := now.Sub(frame.receivedAt)
 		missing := jb.getMissing(frame)
 
-		// Request loss as soon as the initial/retry delay has elapsed. The old
-		// implementation waited until maxLatency before the first NACK, which
-		// made retransmission useless for high-refresh streaming.
+		// Request loss as soon as the initial/retry delay has elapsed.
 		if len(missing) > 0 && age >= jb.nackRetryDelay && age <= jb.maxLatency {
 			lastNACK, already := jb.nackedFrames[seq]
 			if !already || now.Sub(lastNACK) >= jb.nackRetryDelay {
@@ -191,20 +258,42 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 			data := jb.reassemble(frame)
 			delete(jb.frames, seq)
 			delete(jb.nackedFrames, seq)
+			jb.markFrameExpired(seq, frame)
 			logger.Info("client", "FORCE output frame=%d %.0f%% (%d/%d packets, %d missing)", seq, receivedRatio*100, len(frame.packets), frame.totalPackets, len(missing))
 			return data, seq
 		}
 
 		// Complete-frame codecs such as H.264 cannot decode a truncated access
-		// unit. Keep a short repair window, then discard it instead of letting
-		// stale frames accumulate behind current media.
+		// unit. Discard expired frame and mark remaining missing packets unrecovered.
 		if age > jb.maxLatency*2 {
 			delete(jb.frames, seq)
 			delete(jb.nackedFrames, seq)
+			jb.markFrameExpired(seq, frame)
 		}
 	}
 
 	return nil, 0
+}
+
+func (jb *JitterBuffer) cleanActiveMissingForFrame(seq uint32) {
+	for k := range jb.activeMissing {
+		if k.frameSeq == seq {
+			delete(jb.activeMissing, k)
+		}
+	}
+}
+
+func (jb *JitterBuffer) markFrameExpired(seq uint32, fb *FrameBuffer) {
+	missing := jb.getMissing(fb)
+	for _, id := range missing {
+		k := packetKey{frameSeq: seq, packetID: id}
+		if _, ok := jb.activeMissing[k]; ok {
+			delete(jb.activeMissing, k)
+			if jb.lossObserver != nil {
+				jb.lossObserver.OnMissingUnrecovered(1)
+			}
+		}
+	}
 }
 
 func (jb *JitterBuffer) reassemble(fb *FrameBuffer) []byte {

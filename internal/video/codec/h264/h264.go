@@ -30,6 +30,14 @@ type Decoder interface {
 	Close() error
 }
 
+type FrameHandler func(rgbaData []byte, width, height int)
+
+type StreamingDecoder interface {
+	Decoder
+	Push(encodedData []byte, width, height int) error
+	SetOutputHandler(handler FrameHandler)
+}
+
 func (c Config) GetString(key, fallback string) string {
 	if v, ok := c[key]; ok {
 		if s, ok := v.(string); ok {

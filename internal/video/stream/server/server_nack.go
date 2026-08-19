@@ -31,9 +31,11 @@ func (s *Sender) listenForNACKs() {
 			switch h.PacketType {
 			case stream.CSPPacketTypeJoin:
 				target := s.resolveJoinEndpoint(addr, buf[:n])
-				s.registerViewer(target)
+				_, isNew := s.registerViewer(target)
 				s.sendSessionInfo(target)
-				logger.Info("server", "viewer joined %s active=%d", target.String(), s.viewerCount())
+				if isNew {
+					logger.Info("server", "viewer joined %s active=%d", target.String(), s.viewerCount())
+				}
 
 			case stream.CSPPacketTypeNACK:
 				s.touchViewer(addr)

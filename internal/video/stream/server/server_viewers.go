@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"streamscreen/internal/logger"
 	"streamscreen/internal/video/stream"
 )
 
@@ -17,6 +18,102 @@ const (
 	mediaRepair
 )
 
+type CongestionState int
+
+const (
+	CongestionHealthy CongestionState = iota
+	CongestionConstrained
+	CongestionCongested
+	CongestionSeverelyCongested
+)
+
+func (c CongestionState) String() string {
+	switch c {
+	case CongestionHealthy:
+		return "healthy"
+	case CongestionConstrained:
+		return "constrained"
+	case CongestionCongested:
+		return "congested"
+	case CongestionSeverelyCongested:
+		return "severely_congested"
+	default:
+		return "unknown"
+	}
+}
+
+type tokenPacer struct {
+	mu               sync.Mutex
+	targetBitrateBps uint64
+	tokens           float64
+	maxTokens        float64
+	lastRefill       time.Time
+}
+
+func newTokenPacer(targetBps uint64) *tokenPacer {
+	if targetBps <= 0 {
+		targetBps = 6000000
+	}
+	burst := 4096.0 // allow ~3-4 MTU burst
+	return &tokenPacer{
+		targetBitrateBps: targetBps,
+		tokens:           burst,
+		maxTokens:        burst,
+		lastRefill:       time.Now(),
+	}
+}
+
+func (p *tokenPacer) setTargetBitrate(bps uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if bps < 500000 {
+		bps = 500000
+	}
+	if bps > 50000000 {
+		bps = 50000000
+	}
+	p.targetBitrateBps = bps
+}
+
+func (p *tokenPacer) pace(packetBytes int, immediate bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	if p.lastRefill.IsZero() {
+		p.lastRefill = now
+		p.tokens = p.maxTokens
+	}
+	elapsed := now.Sub(p.lastRefill).Seconds()
+	p.lastRefill = now
+
+	p.tokens += float64(p.targetBitrateBps) * elapsed / 8.0
+	if p.tokens > p.maxTokens {
+		p.tokens = p.maxTokens
+	}
+
+	cost := float64(packetBytes)
+	if immediate {
+		p.tokens -= cost
+		return
+	}
+
+	if p.tokens >= cost {
+		p.tokens -= cost
+		return
+	}
+
+	needed := cost - p.tokens
+	waitSec := (needed * 8.0) / float64(p.targetBitrateBps)
+	p.tokens = 0
+	if waitSec > 0 {
+		if waitSec > 0.05 {
+			waitSec = 0.05
+		}
+		time.Sleep(time.Duration(waitSec * float64(time.Second)))
+	}
+}
+
 type packetBatch struct {
 	packets  [][]byte
 	class    mediaClass
@@ -27,11 +124,12 @@ type packetBatch struct {
 type viewerState struct {
 	addr *net.UDPAddr
 
-	mu           sync.RWMutex
-	lastSeen     time.Time
-	videoGap     time.Duration
-	audioGap     time.Duration
-	fecGroupSize int
+	mu              sync.RWMutex
+	lastSeen        time.Time
+	fecGroupSize    int
+	congestionState CongestionState
+	healthyRounds   int
+	pacer           *tokenPacer
 
 	videoQ  chan packetBatch
 	audioQ  chan packetBatch
@@ -47,6 +145,7 @@ func newViewerState(addr *net.UDPAddr) *viewerState {
 	return &viewerState{
 		addr:     &copyAddr,
 		lastSeen: time.Now(),
+		pacer:    newTokenPacer(6000000),
 		videoQ:   make(chan packetBatch, 3),
 		audioQ:   make(chan packetBatch, 32),
 		repairQ:  make(chan packetBatch, 16),
@@ -66,13 +165,6 @@ func (v *viewerState) seenAt() time.Time {
 	return v.lastSeen
 }
 
-func (v *viewerState) setPacing(videoGap, audioGap time.Duration) {
-	v.mu.Lock()
-	v.videoGap = videoGap
-	v.audioGap = audioGap
-	v.mu.Unlock()
-}
-
 func (v *viewerState) setFECGroupSize(groupSize int) {
 	v.mu.Lock()
 	v.fecGroupSize = groupSize
@@ -85,39 +177,50 @@ func (v *viewerState) fecGroup() int {
 	return v.fecGroupSize
 }
 
-func (v *viewerState) pacing(class mediaClass) time.Duration {
+func (v *viewerState) shouldDropVideoBatch(frameSeq uint32) bool {
 	v.mu.RLock()
-	defer v.mu.RUnlock()
-	if class == mediaAudio {
-		return v.audioGap
+	state := v.congestionState
+	v.mu.RUnlock()
+
+	switch state {
+	case CongestionHealthy:
+		return false
+	case CongestionConstrained:
+		return (frameSeq % 4) == 0
+	case CongestionCongested:
+		return (frameSeq % 2) == 0
+	case CongestionSeverelyCongested:
+		return (frameSeq % 4) != 0
+	default:
+		return false
 	}
-	return v.videoGap
 }
 
 func (v *viewerState) stop() {
 	v.once.Do(func() { close(v.done) })
 }
 
-func (s *Sender) registerViewer(addr *net.UDPAddr) *viewerState {
+func (s *Sender) registerViewer(addr *net.UDPAddr) (*viewerState, bool) {
 	if addr == nil {
-		return nil
+		return nil, false
 	}
 	key := addr.String()
 	s.viewersMu.Lock()
 	if existing := s.viewers[key]; existing != nil {
 		existing.touch()
 		s.viewersMu.Unlock()
-		return existing
+		return existing, false
 	}
 	viewer := newViewerState(addr)
 	s.viewers[key] = viewer
 	s.viewersMu.Unlock()
 	go s.viewerSendLoop(viewer)
-	return viewer
+	return viewer, true
 }
 
 func (s *Sender) touchViewer(addr *net.UDPAddr) *viewerState {
-	return s.registerViewer(addr)
+	v, _ := s.registerViewer(addr)
+	return v
 }
 
 func (s *Sender) viewerFor(addr *net.UDPAddr) *viewerState {
@@ -138,6 +241,7 @@ func (s *Sender) activeViewers() []*viewerState {
 		if s.clientTimeout > 0 && now.Sub(viewer.seenAt()) > s.clientTimeout {
 			delete(s.viewers, key)
 			viewer.stop()
+			logger.Info("server", "viewer expired %s (inactive for %s)", key, now.Sub(viewer.seenAt()).Round(time.Millisecond))
 			continue
 		}
 		viewers = append(viewers, viewer)
@@ -246,6 +350,11 @@ func (s *Sender) broadcastVideoBatch(packets [][]byte, frameSeq uint32) {
 	deadline := time.Now().Add(s.frameDeadline)
 	fecCache := make(map[int][][]byte)
 	for _, viewer := range s.activeViewers() {
+		if viewer.shouldDropVideoBatch(frameSeq) {
+			atomic.AddUint64(&viewer.droppedVideo, 1)
+			continue
+		}
+
 		viewerPackets := packets
 		groupSize := viewer.fecGroup()
 		if groupSize >= 2 {
@@ -276,6 +385,10 @@ func (s *Sender) broadcastVideoBatch(packets [][]byte, frameSeq uint32) {
 func (s *Sender) sendVideoBatchTo(addr *net.UDPAddr, packets [][]byte, frameSeq uint32) {
 	viewer := s.touchViewer(addr)
 	if viewer == nil || len(packets) == 0 {
+		return
+	}
+	if viewer.shouldDropVideoBatch(frameSeq) {
+		atomic.AddUint64(&viewer.droppedVideo, 1)
 		return
 	}
 	enqueueLatest(viewer.videoQ, packetBatch{
@@ -324,30 +437,44 @@ func (s *Sender) viewerSendLoop(viewer *viewerState) {
 		default:
 		}
 
+		// 1. Drain all pending audio first (audio has highest scheduling priority)
+		drainedAudio := false
+		for {
+			select {
+			case batch := <-viewer.audioQ:
+				s.sendBatch(viewer, batch)
+				drainedAudio = true
+			default:
+				drainedAudio = false
+			}
+			if !drainedAudio {
+				break
+			}
+		}
+
+		// 2. Process bounded repair budget (1 batch per cycle before yielding to video)
+		servicedRepair := false
 		select {
 		case batch := <-viewer.repairQ:
 			s.sendBatch(viewer, batch)
-			continue
-		default:
-		}
-		select {
-		case batch := <-viewer.audioQ:
-			s.sendBatch(viewer, batch)
-			continue
+			servicedRepair = true
 		default:
 		}
 
+		// 3. Service next available batch
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-viewer.done:
 			return
-		case batch := <-viewer.repairQ:
-			s.sendBatch(viewer, batch)
 		case batch := <-viewer.audioQ:
 			s.sendBatch(viewer, batch)
 		case batch := <-viewer.videoQ:
 			s.sendBatch(viewer, batch)
+		case batch := <-viewer.repairQ:
+			if !servicedRepair {
+				s.sendBatch(viewer, batch)
+			}
 		}
 	}
 }
@@ -356,11 +483,12 @@ func (s *Sender) sendBatch(viewer *viewerState, batch packetBatch) {
 	if !batch.deadline.IsZero() && time.Now().After(batch.deadline) {
 		return
 	}
-	gap := viewer.pacing(batch.class)
+	isAudio := (batch.class == mediaAudio)
 	for _, packet := range batch.packets {
-		_, _ = s.conn.WriteToUDP(packet, viewer.addr)
-		if gap > 0 {
-			time.Sleep(gap)
+		if !batch.deadline.IsZero() && time.Now().After(batch.deadline) {
+			return
 		}
+		viewer.pacer.pace(len(packet), isAudio)
+		_, _ = s.conn.WriteToUDP(packet, viewer.addr)
 	}
 }

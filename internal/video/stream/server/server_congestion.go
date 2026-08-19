@@ -2,7 +2,6 @@ package server
 
 import (
 	"net"
-	"time"
 
 	"streamscreen/internal/logger"
 	"streamscreen/internal/video/stream"
@@ -14,53 +13,96 @@ func (s *Sender) applyControlFeedback(addr *net.UDPAddr, f stream.ExtendedContro
 		return
 	}
 
-	pressure := int(f.FrameQueuePercent)
-	if int(f.AudioQueuePercent) > pressure {
-		pressure = int(f.AudioQueuePercent)
-	}
-	if f.FrameDrops > 0 {
-		pressure += 20
-	}
-	if f.AudioDrops > 0 {
-		pressure += 20
-	}
-	if f.NACKSent > 0 {
-		pressure += 8
-	}
+	viewer.mu.Lock()
+	oldState := viewer.congestionState
+	newState := evaluateCongestionState(oldState, f, &viewer.healthyRounds)
+	viewer.congestionState = newState
+	fecGroupSize := fecGroupForLoss(f.LossPermille, newState)
+	viewer.fecGroupSize = fecGroupSize
 
-	// Loss is reported in permille. Increase pressure gradually so a brief
-	// random loss spike does not immediately collapse the stream, but sustained
-	// multi-percent loss has a material effect on pacing.
-	pressure += int(f.LossPermille) / 5
-	if f.RTTMS > 80 {
-		pressure += int(f.RTTMS-80) / 10
+	s.cfgMu.RLock()
+	baseBitrateKbps := 6000
+	if s.codecName == "h264" {
+		if br, ok := s.cfg.Capture.H264CodecConfig["bitrate"]; ok {
+			if v, ok := br.(int); ok && v > 0 {
+				baseBitrateKbps = v
+			}
+		}
 	}
-	if f.JitterMS > 10 {
-		pressure += int(f.JitterMS-10) / 2
+	s.cfgMu.RUnlock()
+
+	baseBitrateBps := uint64(baseBitrateKbps) * 1000
+	var targetBps uint64
+	switch newState {
+	case CongestionHealthy:
+		targetBps = baseBitrateBps
+	case CongestionConstrained:
+		targetBps = uint64(float64(baseBitrateBps) * 0.8)
+	case CongestionCongested:
+		targetBps = uint64(float64(baseBitrateBps) * 0.5)
+	case CongestionSeverelyCongested:
+		targetBps = uint64(float64(baseBitrateBps) * 0.3)
 	}
-	if pressure > 100 {
-		pressure = 100
+	if targetBps < 500000 {
+		targetBps = 500000
 	}
+	if f.DeliveryRateKbps > 0 {
+		deliveryBps := uint64(f.DeliveryRateKbps) * 1000
+		if deliveryBps < targetBps && deliveryBps >= 500000 {
+			targetBps = deliveryBps
+		}
+	}
+	viewer.pacer.setTargetBitrate(targetBps)
+	viewer.mu.Unlock()
 
-	videoGap := pressureToGap(pressure)
-	// Audio remains deliberately less throttled than video.
-	audioGap := pressureToGap(pressure / 3)
-	viewer.setPacing(videoGap, audioGap)
-
-	// XOR parity is enabled only on the lossy viewer path. Smaller groups mean
-	// more redundancy: 1/16=6.25%, 1/8=12.5%, 1/4=25% before the small header.
-	fecGroupSize := fecGroupForLoss(f.LossPermille)
-	viewer.setFECGroupSize(fecGroupSize)
-
-	if pressure >= 20 || f.FrameDrops > 0 || f.AudioDrops > 0 || f.NACKSent > 0 || fecGroupSize > 0 {
-		logger.Info("server", "viewer=%s cc pressure=%d frame_q=%d%% audio_q=%d%% loss=%.1f%% rtt=%dms jitter=%dms rate=%dkbps -> video_gap=%s audio_gap=%s fec_group=%d",
-			addr.String(), pressure, f.FrameQueuePercent, f.AudioQueuePercent,
-			float64(f.LossPermille)/10.0, f.RTTMS, f.JitterMS, f.DeliveryRateKbps,
-			videoGap, audioGap, fecGroupSize)
+	if newState != CongestionHealthy || f.FrameDrops > 0 || f.AudioDrops > 0 || f.NACKSent > 0 || fecGroupSize > 0 {
+		logger.Info("server", "viewer=%s cc state=%s target=%dkbps frame_q=%d%% audio_q=%d%% raw_loss=%.1f%% res_loss=%.1f%% rtt=%dms jitter=%dms rate=%dkbps fec_group=%d",
+			addr.String(), newState.String(), targetBps/1000, f.FrameQueuePercent, f.AudioQueuePercent,
+			float64(f.LossPermille)/10.0, float64(f.ResidualLossPermille)/10.0, f.RTTMS, f.JitterMS, f.DeliveryRateKbps,
+			fecGroupSize)
 	}
 }
 
-func fecGroupForLoss(lossPermille uint16) int {
+func evaluateCongestionState(current CongestionState, f stream.ExtendedControlFeedback, healthyRounds *int) CongestionState {
+	// Fast escalation to protect queue and network
+	if f.FrameDrops > 0 || f.FrameQueuePercent >= 75 || f.LossPermille >= 150 {
+		*healthyRounds = 0
+		return CongestionSeverelyCongested
+	}
+	if f.FrameQueuePercent >= 50 || f.LossPermille >= 60 || f.ResidualLossPermille >= 30 || f.RTTMS > 150 {
+		*healthyRounds = 0
+		if current < CongestionCongested {
+			return CongestionCongested
+		}
+		return current
+	}
+	if f.FrameQueuePercent >= 25 || f.LossPermille >= 20 || f.RTTMS > 100 {
+		*healthyRounds = 0
+		if current < CongestionConstrained {
+			return CongestionConstrained
+		}
+		return current
+	}
+
+	// Healthy observations: recover gradually with hysteresis
+	*healthyRounds++
+	if *healthyRounds >= 3 {
+		*healthyRounds = 0
+		if current > CongestionHealthy {
+			return current - 1
+		}
+	}
+	return current
+}
+
+func fecGroupForLoss(lossPermille uint16, state CongestionState) int {
+	if state == CongestionSeverelyCongested {
+		// When severely congested, adding 25% FEC overhead worsens the bottleneck.
+		if lossPermille >= 50 {
+			return 8 // cap at 12.5% overhead
+		}
+		return 0
+	}
 	switch {
 	case lossPermille < 5: // < 0.5%
 		return 0
@@ -69,21 +111,9 @@ func fecGroupForLoss(lossPermille uint16) int {
 	case lossPermille < 50: // < 5%
 		return 8
 	default:
+		if state == CongestionCongested {
+			return 8
+		}
 		return 4
-	}
-}
-
-func pressureToGap(pressure int) time.Duration {
-	switch {
-	case pressure < 30:
-		return 0
-	case pressure < 50:
-		return 10 * time.Microsecond
-	case pressure < 70:
-		return 25 * time.Microsecond
-	case pressure < 85:
-		return 50 * time.Microsecond
-	default:
-		return 100 * time.Microsecond
 	}
 }

@@ -65,21 +65,25 @@ func TestBroadcastVideoBatchFansOutToTwoViewers(t *testing.T) {
 
 func TestFECGroupForLoss(t *testing.T) {
 	cases := []struct {
-		loss uint16
-		want int
+		loss  uint16
+		state CongestionState
+		want  int
 	}{
-		{0, 0},
-		{4, 0},
-		{5, 16},
-		{19, 16},
-		{20, 8},
-		{49, 8},
-		{50, 4},
-		{100, 4},
+		{0, CongestionHealthy, 0},
+		{4, CongestionHealthy, 0},
+		{5, CongestionHealthy, 16},
+		{19, CongestionHealthy, 16},
+		{20, CongestionHealthy, 8},
+		{49, CongestionHealthy, 8},
+		{50, CongestionHealthy, 4},
+		{100, CongestionHealthy, 4},
+		{100, CongestionCongested, 8},
+		{100, CongestionSeverelyCongested, 8},
+		{40, CongestionSeverelyCongested, 0},
 	}
 	for _, tc := range cases {
-		if got := fecGroupForLoss(tc.loss); got != tc.want {
-			t.Fatalf("loss=%d permille fec_group=%d want=%d", tc.loss, got, tc.want)
+		if got := fecGroupForLoss(tc.loss, tc.state); got != tc.want {
+			t.Fatalf("loss=%d state=%s permille fec_group=%d want=%d", tc.loss, tc.state.String(), got, tc.want)
 		}
 	}
 }

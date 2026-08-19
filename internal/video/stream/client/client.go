@@ -44,6 +44,7 @@ type ClientReceiver struct {
 	videoInfoMu   sync.RWMutex
 	blockyPipeline    *blocky.ClientPipeline
 	h264Pipeline      *videoh264.ClientPipeline
+	h264DecodedFrames chan []byte
 	h264ErrMu         sync.Mutex
 	h264ErrCount      uint64
 	h264ErrLogAt      time.Time
@@ -65,14 +66,22 @@ type ClientReceiver struct {
 	audioFragMu       sync.Mutex
 	audioFragBuf      map[uint32]*audioFragmentBuffer
 
-	ccFrameDrops      uint64
-	ccAudioDrops      uint64
-	ccNACKSent        uint64
-	ccFECRecovered    uint64
-	ccPacketsReceived uint64
-	ccBytesReceived   uint64
-	ccRTTMS           uint32
-	ccProbeNonce      uint32
+	ccFrameDrops             uint64
+	ccAudioDrops             uint64
+	ccNACKRequestsSent       uint64
+	ccNACKPacketIDsSent      uint64
+	ccMediaDataReceived      uint64
+	ccFECParityReceived      uint64
+	ccUniqueMissingDetected  uint64
+	ccMissingRecoveredByNACK uint64
+	ccMissingRecoveredByFEC  uint64
+	ccMissingUnrecovered     uint64
+	ccDecodedDrops           uint64
+	ccDecodedFrames          uint64
+	ccPacketsReceived        uint64
+	ccBytesReceived          uint64
+	ccRTTMS                  uint32
+	ccProbeNonce             uint32
 }
 
 type audioFragmentBuffer struct {
@@ -117,7 +126,7 @@ func NewClientReceiver(cfg config.ClientConfig) (*ClientReceiver, error) {
 	if fecMaxAge < 100*time.Millisecond {
 		fecMaxAge = 100 * time.Millisecond
 	}
-	return &ClientReceiver{
+	rcv := &ClientReceiver{
 		cfg:           cfg,
 		conn:          conn,
 		serverAddr:    serverAddr,
@@ -134,7 +143,25 @@ func NewClientReceiver(cfg config.ClientConfig) (*ClientReceiver, error) {
 		audioEnabled:  cfg.Audio.Enabled,
 		audioFrames:   make(chan []byte, 64),
 		audioFragBuf:  make(map[uint32]*audioFragmentBuffer),
-	}, nil
+	}
+	jb.SetLossObserver(rcv)
+	return rcv, nil
+}
+
+func (r *ClientReceiver) OnUniqueMissingDetected(count int) {
+	atomic.AddUint64(&r.ccUniqueMissingDetected, uint64(count))
+}
+
+func (r *ClientReceiver) OnMissingRecoveredByNACK(count int) {
+	atomic.AddUint64(&r.ccMissingRecoveredByNACK, uint64(count))
+}
+
+func (r *ClientReceiver) OnMissingRecoveredByFEC(count int) {
+	atomic.AddUint64(&r.ccMissingRecoveredByFEC, uint64(count))
+}
+
+func (r *ClientReceiver) OnMissingUnrecovered(count int) {
+	atomic.AddUint64(&r.ccMissingUnrecovered, uint64(count))
 }
 
 func (r *ClientReceiver) Start() error {
@@ -175,6 +202,7 @@ func (r *ClientReceiver) Start() error {
 				}
 				r.jitterBuffer.SetCompleteFramesOnly()
 				go r.appsrcLoop()
+				go r.h264OutputLoop()
 				if err := r.startAudioPipeline(); err != nil {
 					return err
 				}

@@ -4,6 +4,7 @@ package gstreamer
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-gst/go-gst/gst"
@@ -22,14 +23,6 @@ type Encoder struct {
 	preset    string
 	tune      string
 	keyIntMax int
-}
-
-type Decoder struct {
-	pipeline *gst.Pipeline
-	appsrc   *app.Source
-	appsink  *app.Sink
-	nextPTS  gst.ClockTime
-	frameDur gst.ClockTime
 }
 
 func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
@@ -172,6 +165,20 @@ func (e *Encoder) Close() error {
 	return nil
 }
 
+type OutputHandler func(rgbaData []byte, width, height int)
+
+type Decoder struct {
+	pipeline  *gst.Pipeline
+	appsrc    *app.Source
+	appsink   *app.Sink
+	nextPTS   gst.ClockTime
+	frameDur  gst.ClockTime
+	handlerMu sync.RWMutex
+	handler   OutputHandler
+	width     int
+	height    int
+}
+
 func NewDecoder(cfg map[string]interface{}) (*Decoder, error) {
 	fps := intFrom(cfg, "fps", 60)
 	if fps <= 0 {
@@ -180,8 +187,8 @@ func NewDecoder(cfg map[string]interface{}) (*Decoder, error) {
 	gst.Init(nil)
 
 	pipelineStr := "appsrc name=src is-live=true format=time do-timestamp=true block=false ! " +
-		"queue leaky=downstream max-size-buffers=4 ! h264parse ! avdec_h264 ! videoconvert ! " +
-		"video/x-raw,format=RGBA ! appsink name=sink sync=false async=false max-buffers=1 drop=true"
+		"queue leaky=downstream max-size-buffers=4 ! h264parse ! avdec_h264 max-threads=1 ! videoconvert ! " +
+		"video/x-raw,format=RGBA ! appsink name=sink sync=false async=false max-buffers=2 drop=true emit-signals=true"
 
 	pipeline, err := gst.NewPipelineFromString(pipelineStr)
 	if err != nil {
@@ -203,29 +210,71 @@ func NewDecoder(cfg map[string]interface{}) (*Decoder, error) {
 	}
 
 	appsrc.SetCaps(gst.NewCapsFromString("video/x-h264,stream-format=byte-stream,alignment=au"))
-	if err := pipeline.SetState(gst.StatePlaying); err != nil {
-		return nil, fmt.Errorf("h264: failed to set decoder pipeline playing: %w", err)
-	}
 
-	return &Decoder{
+	d := &Decoder{
 		pipeline: pipeline,
 		appsrc:   appsrc,
 		appsink:  appsink,
 		frameDur: gst.ClockTime((time.Second / time.Duration(fps)).Nanoseconds()),
-	}, nil
+	}
+
+	appsink.SetCallbacks(&app.SinkCallbacks{
+		NewSampleFunc: d.onDecodedSample,
+	})
+
+	if err := pipeline.SetState(gst.StatePlaying); err != nil {
+		return nil, fmt.Errorf("h264: failed to set decoder pipeline playing: %w", err)
+	}
+
+	return d, nil
 }
 
-func (d *Decoder) Decode(encodedData []byte, width, height int) ([]byte, error) {
+func (d *Decoder) SetOutputHandler(handler func(rgbaData []byte, width, height int)) {
+	d.handlerMu.Lock()
+	d.handler = handler
+	d.handlerMu.Unlock()
+}
+
+func (d *Decoder) onDecodedSample(sink *app.Sink) gst.FlowReturn {
+	sample := sink.PullSample()
+	if sample == nil {
+		return gst.FlowError
+	}
+	buf := sample.GetBuffer()
+	if buf == nil {
+		return gst.FlowOK
+	}
+
+	data := buf.Bytes()
+	d.handlerMu.RLock()
+	h := d.handler
+	w := d.width
+	ht := d.height
+	d.handlerMu.RUnlock()
+
+	if h != nil && len(data) > 0 {
+		frameCopy := append([]byte(nil), data...)
+		h(frameCopy, w, ht)
+	}
+	return gst.FlowOK
+}
+
+func (d *Decoder) Push(encodedData []byte, width, height int) error {
 	if d.pipeline == nil {
-		return nil, fmt.Errorf("h264: decoder not initialized")
+		return fmt.Errorf("h264: decoder not initialized")
 	}
 	if len(encodedData) == 0 {
-		return nil, fmt.Errorf("h264: empty encoded data")
+		return nil
 	}
+
+	d.handlerMu.Lock()
+	d.width = width
+	d.height = height
+	d.handlerMu.Unlock()
 
 	buffer := gst.NewBufferFromBytes(encodedData)
 	if buffer == nil {
-		return nil, fmt.Errorf("h264: failed to create GStreamer buffer")
+		return fmt.Errorf("h264: failed to create GStreamer buffer")
 	}
 	buffer.SetPresentationTimestamp(d.nextPTS)
 	buffer.SetDuration(d.frameDur)
@@ -233,24 +282,16 @@ func (d *Decoder) Decode(encodedData []byte, width, height int) ([]byte, error) 
 
 	ret := d.appsrc.PushBuffer(buffer)
 	if ret != gst.FlowOK && ret != gst.FlowFlushing {
-		return nil, fmt.Errorf("h264: appsrc push failed: %v", ret)
+		return fmt.Errorf("h264: appsrc push failed: %v", ret)
 	}
+	return nil
+}
 
-	sample := d.appsink.TryPullSample(gst.ClockTime((500 * time.Millisecond).Nanoseconds()))
-	if sample == nil {
-		return nil, fmt.Errorf("h264: no decoded sample available")
+func (d *Decoder) Decode(encodedData []byte, width, height int) ([]byte, error) {
+	if err := d.Push(encodedData, width, height); err != nil {
+		return nil, err
 	}
-	buf := sample.GetBuffer()
-	if buf == nil {
-		return nil, fmt.Errorf("h264: failed to get buffer from sample")
-	}
-
-	decoded := buf.Bytes()
-	expectedSize := width * height * 4
-	if len(decoded) != expectedSize {
-		return nil, fmt.Errorf("h264: decoded frame size mismatch: got %d, expected %d", len(decoded), expectedSize)
-	}
-	return decoded, nil
+	return nil, nil
 }
 
 func (d *Decoder) Close() error {

@@ -13,13 +13,18 @@ import (
 func (s *Sender) Start(pipewireFD int, nodeID uint32) error {
 	gst.Init(nil)
 
+	fps := s.cfg.Capture.FPS
+	if fps <= 0 {
+		fps = 60
+	}
+
 	pipelineStr := fmt.Sprintf(
 		"pipewiresrc fd=%d path=%d do-timestamp=true ! "+
 			"queue leaky=downstream max-size-buffers=2 ! "+
-			"videoconvert ! "+
-			"videoscale ! video/x-raw,width=%d,height=%d,format=RGBA ! "+
+			"videorate ! videoconvert ! videoscale ! "+
+			"video/x-raw,width=%d,height=%d,format=RGBA,framerate=%d/1 ! "+
 			"appsink name=sink sync=false async=false emit-signals=true",
-		pipewireFD, nodeID, s.cfg.Capture.Width, s.cfg.Capture.Height,
+		pipewireFD, nodeID, s.cfg.Capture.Width, s.cfg.Capture.Height, fps,
 	)
 
 	pipeline, err := gst.NewPipelineFromString(pipelineStr)

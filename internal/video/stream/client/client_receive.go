@@ -40,11 +40,13 @@ func (r *ClientReceiver) receiveLoop() {
 			case stream.CSPPacketTypeAudioData:
 				r.handleAudioDataPacket(h.FrameSeq, h.PacketID, h.TotalPackets, buf[stream.CSPHeaderSize:n])
 			case stream.CSPPacketTypeData:
+				atomic.AddUint64(&r.ccMediaDataReceived, 1)
 				payload := buf[stream.CSPHeaderSize:n]
 				recovered := r.fecRecoverer.PushData(h, payload)
 				r.pushVideoPacket(h, payload)
 				r.pushRecoveredPackets(recovered)
 			case stream.CSPPacketTypeFEC:
+				atomic.AddUint64(&r.ccFECParityReceived, 1)
 				recovered, err := r.fecRecoverer.PushFEC(buf[:n])
 				if err == nil {
 					r.pushRecoveredPackets(recovered)
@@ -61,8 +63,8 @@ func (r *ClientReceiver) pushRecoveredPackets(packets []recoveredPacket) {
 	if len(packets) == 0 {
 		return
 	}
-	atomic.AddUint64(&r.ccFECRecovered, uint64(len(packets)))
 	for _, packet := range packets {
+		r.jitterBuffer.MarkRecoveredByFEC(packet.Header.FrameSeq, packet.Header.PacketID)
 		r.pushVideoPacket(packet.Header, packet.Payload)
 	}
 }

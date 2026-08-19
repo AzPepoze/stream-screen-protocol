@@ -21,10 +21,11 @@ const (
 // network measurements that can drive per-viewer pacing decisions.
 type ExtendedControlFeedback struct {
 	ControlFeedback
-	RTTMS            uint16
-	JitterMS         uint16
-	LossPermille     uint16
-	DeliveryRateKbps uint32
+	RTTMS                uint16
+	JitterMS             uint16
+	LossPermille         uint16
+	DeliveryRateKbps     uint32
+	ResidualLossPermille uint16
 }
 
 type XORFEC struct {
@@ -49,7 +50,7 @@ func TimestampAgeMS(timestamp uint32) uint32 {
 // MarshalExtendedControlFeedback uses payload version 2 while keeping the
 // original CSP header and v1 fields at their existing offsets.
 func MarshalExtendedControlFeedback(f ExtendedControlFeedback) []byte {
-	const payloadSize = 28
+	const payloadSize = 30
 	buf := make([]byte, CSPHeaderSize+payloadSize)
 	h := PacketHeader{Version: CSPVersion, PacketType: CSPPacketTypeControl}
 	h.Marshal(buf[:CSPHeaderSize])
@@ -63,6 +64,7 @@ func MarshalExtendedControlFeedback(f ExtendedControlFeedback) []byte {
 	binary.BigEndian.PutUint16(buf[CSPHeaderSize+18:CSPHeaderSize+20], f.JitterMS)
 	binary.BigEndian.PutUint16(buf[CSPHeaderSize+20:CSPHeaderSize+22], f.LossPermille)
 	binary.BigEndian.PutUint32(buf[CSPHeaderSize+24:CSPHeaderSize+28], f.DeliveryRateKbps)
+	binary.BigEndian.PutUint16(buf[CSPHeaderSize+28:CSPHeaderSize+30], f.ResidualLossPermille)
 	return buf
 }
 
@@ -95,6 +97,13 @@ func UnmarshalExtendedControlFeedback(buf []byte) (ExtendedControlFeedback, erro
 		return ExtendedControlFeedback{}, fmt.Errorf("buffer too small for v2 control feedback: %d", len(buf))
 	}
 
+	var residualLoss uint16
+	if len(buf) >= CSPHeaderSize+30 {
+		residualLoss = binary.BigEndian.Uint16(buf[CSPHeaderSize+28 : CSPHeaderSize+30])
+	} else {
+		residualLoss = binary.BigEndian.Uint16(buf[CSPHeaderSize+20 : CSPHeaderSize+22])
+	}
+
 	return ExtendedControlFeedback{
 		ControlFeedback: ControlFeedback{
 			FrameQueuePercent: buf[CSPHeaderSize+1],
@@ -103,10 +112,11 @@ func UnmarshalExtendedControlFeedback(buf []byte) (ExtendedControlFeedback, erro
 			AudioDrops:        binary.BigEndian.Uint32(buf[CSPHeaderSize+8 : CSPHeaderSize+12]),
 			NACKSent:          binary.BigEndian.Uint32(buf[CSPHeaderSize+12 : CSPHeaderSize+16]),
 		},
-		RTTMS:            binary.BigEndian.Uint16(buf[CSPHeaderSize+16 : CSPHeaderSize+18]),
-		JitterMS:         binary.BigEndian.Uint16(buf[CSPHeaderSize+18 : CSPHeaderSize+20]),
-		LossPermille:     binary.BigEndian.Uint16(buf[CSPHeaderSize+20 : CSPHeaderSize+22]),
-		DeliveryRateKbps: binary.BigEndian.Uint32(buf[CSPHeaderSize+24 : CSPHeaderSize+28]),
+		RTTMS:                binary.BigEndian.Uint16(buf[CSPHeaderSize+16 : CSPHeaderSize+18]),
+		JitterMS:             binary.BigEndian.Uint16(buf[CSPHeaderSize+18 : CSPHeaderSize+20]),
+		LossPermille:         binary.BigEndian.Uint16(buf[CSPHeaderSize+20 : CSPHeaderSize+22]),
+		DeliveryRateKbps:     binary.BigEndian.Uint32(buf[CSPHeaderSize+24 : CSPHeaderSize+28]),
+		ResidualLossPermille: residualLoss,
 	}, nil
 }
 

@@ -47,13 +47,18 @@ func (s *linuxSource) Start(ctx context.Context) error {
 	streamInfo := session.Streams[0]
 	logger.Info("capture", "portal stream_node=%d", streamInfo.NodeID)
 
+	fps := s.cfg.Capture.FPS
+	if fps <= 0 {
+		fps = 60
+	}
+
 	pipelineStr := fmt.Sprintf(
 		"pipewiresrc fd=%d path=%d do-timestamp=true ! "+
 			"queue leaky=downstream max-size-buffers=2 ! "+
-			"videoconvert ! "+
-			"videoscale ! video/x-raw,width=%d,height=%d,format=RGBA ! "+
+			"videorate ! videoconvert ! videoscale ! "+
+			"video/x-raw,width=%d,height=%d,format=RGBA,framerate=%d/1 ! "+
 			"appsink name=sink sync=false async=false emit-signals=true",
-		int(session.RemoteFile().Fd()), streamInfo.NodeID, s.cfg.Capture.Width, s.cfg.Capture.Height,
+		int(session.RemoteFile().Fd()), streamInfo.NodeID, s.cfg.Capture.Width, s.cfg.Capture.Height, fps,
 	)
 
 	pipeline, err := gst.NewPipelineFromString(pipelineStr)
