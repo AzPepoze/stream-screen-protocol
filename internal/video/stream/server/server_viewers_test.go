@@ -63,16 +63,39 @@ func TestBroadcastVideoBatchFansOutToTwoViewers(t *testing.T) {
 	}
 }
 
+func TestFECGroupForLoss(t *testing.T) {
+	cases := []struct {
+		loss uint16
+		want int
+	}{
+		{0, 0},
+		{4, 0},
+		{5, 16},
+		{19, 16},
+		{20, 8},
+		{49, 8},
+		{50, 4},
+		{100, 4},
+	}
+	for _, tc := range cases {
+		if got := fecGroupForLoss(tc.loss); got != tc.want {
+			t.Fatalf("loss=%d permille fec_group=%d want=%d", tc.loss, got, tc.want)
+		}
+	}
+}
+
 func TestPacketBeforeDeadline(t *testing.T) {
 	s := &Sender{frameDeadline: 50 * time.Millisecond}
 	fresh := make([]byte, stream.CSPHeaderSize)
-	stream.PacketHeader{Version: stream.CSPVersion, PacketType: stream.CSPPacketTypeData, Timestamp: stream.NowTimestampMS()}.Marshal(fresh)
+	freshHeader := stream.PacketHeader{Version: stream.CSPVersion, PacketType: stream.CSPPacketTypeData, Timestamp: stream.NowTimestampMS()}
+	freshHeader.Marshal(fresh)
 	if !s.packetBeforeDeadline(fresh) {
 		t.Fatal("fresh packet should be retransmittable")
 	}
 
 	stale := make([]byte, stream.CSPHeaderSize)
-	stream.PacketHeader{Version: stream.CSPVersion, PacketType: stream.CSPPacketTypeData, Timestamp: stream.NowTimestampMS() - 500}.Marshal(stale)
+	staleHeader := stream.PacketHeader{Version: stream.CSPVersion, PacketType: stream.CSPPacketTypeData, Timestamp: stream.NowTimestampMS() - 500}
+	staleHeader.Marshal(stale)
 	if s.packetBeforeDeadline(stale) {
 		t.Fatal("stale packet should not be retransmitted")
 	}
