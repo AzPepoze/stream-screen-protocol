@@ -82,6 +82,19 @@ func TestXORFECRoundTrip(t *testing.T) {
 	}
 }
 
+func TestKeyframeRequestRoundTrip(t *testing.T) {
+	reason := "decode_error"
+	packet := MarshalKeyframeRequest(reason)
+	gotReason, err := UnmarshalKeyframeRequest(packet)
+	if err != nil {
+		t.Fatalf("failed to unmarshal keyframe request: %v", err)
+	}
+	if gotReason != reason {
+		t.Fatalf("expected reason %q, got %q", reason, gotReason)
+	}
+}
+
+
 func TestBuildXORFECFromDataPackets(t *testing.T) {
 	payloads := [][]byte{{1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}}
 	packets := make([][]byte, 0, len(payloads))

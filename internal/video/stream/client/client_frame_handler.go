@@ -61,11 +61,16 @@ func (r *ClientReceiver) enqueueFrameLatest(f assembledFrame) {
 	default:
 		logger.Info("client", "frame channel full, dropping frame=%d", f.Seq)
 		atomic.AddUint64(&r.ccFrameDrops, 1)
+		if r.currentCodecName() == "h264" {
+			r.RequestKeyframe("channel_full_drop")
+		}
 	}
 }
 
-// logH264DecodeError logs H264 decoding errors with throttling
+// logH264DecodeError logs H264 decoding errors with throttling and requests an IDR keyframe
 func (r *ClientReceiver) logH264DecodeError(seq uint32, err error) {
+	r.RequestKeyframe("h264_decode_error")
+
 	r.h264ErrMu.Lock()
 	defer r.h264ErrMu.Unlock()
 

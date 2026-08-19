@@ -20,7 +20,7 @@ capture:
      backend: "auto"
 
      # Target capture framerate in frames per second (FPS)
-     fps: 100
+     fps: 60
 
      # Video capture resolution width and height
      width: 1920
@@ -49,9 +49,11 @@ capture:
 
      # H.264 codec parameters (used when codec is "h264")
      h264_codec_config:
-          bitrate: 8000 # Target video bitrate in kbps
+          bitrate: 6000 # Target video bitrate in kbps
           preset: "ultrafast" # Speed preset: ultrafast, superfast, veryfast, faster, fast, medium
           tune: "zerolatency" # Tuning option: zerolatency, film, animation
+          intra_refresh: true # Standard periodic IDR keyframes for instant hardware/software decoder sync
+          key_int_max: 30 # IDR keyframe every 30 frames (0.5s at 60 FPS) to instantly heal any packet loss
           # Optional encoder backend: "auto", "gstreamer", "ffmpeg", "amf", "nvenc", "vaapi"
           # h264_encoder_backend: "auto"
 

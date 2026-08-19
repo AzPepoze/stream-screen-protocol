@@ -59,16 +59,21 @@ func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
 	if keyIntMax <= 0 {
 		keyIntMax = fps
 	}
+	intraRefresh := boolFrom(cfg, "intra_refresh", false)
+	intraRefreshParam := ""
+	if intraRefresh {
+		intraRefreshParam = "intra-refresh=true "
+	}
 
 	gst.Init(nil)
 
 	pipelineStr := fmt.Sprintf(
 		"appsrc name=src is-live=true format=time do-timestamp=true block=false ! "+
 			"queue leaky=downstream max-size-buffers=2 ! videoconvert ! "+
-			"x264enc bitrate=%d speed-preset=%s tune=%s key-int-max=%d bframes=0 byte-stream=true aud=true sliced-threads=true ! "+
+			"x264enc bitrate=%d pass=cbr vbv-buf-capacity=100 speed-preset=%s tune=%s key-int-max=%d %sbframes=0 byte-stream=true aud=true sliced-threads=true ! "+
 			"video/x-h264,stream-format=byte-stream,alignment=au ! "+
 			"appsink name=sink sync=false async=false max-buffers=1 drop=true",
-		bitrate, preset, tune, keyIntMax,
+		bitrate, preset, tune, keyIntMax, intraRefreshParam,
 	)
 
 	pipeline, err := gst.NewPipelineFromString(pipelineStr)
@@ -104,6 +109,19 @@ func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
 		tune:      tune,
 		keyIntMax: keyIntMax,
 	}, nil
+}
+
+func (e *Encoder) ForceKeyframe() error {
+	if e.pipeline == nil {
+		return nil
+	}
+	s := gst.NewStructure("GstForceKeyUnit")
+	s.SetValue("all-headers", true)
+	event := gst.NewCustomEvent(gst.EventTypeCustomUpstream, s)
+	if event != nil && e.appsink != nil {
+		e.appsink.SendEvent(event)
+	}
+	return nil
 }
 
 func (e *Encoder) Encode(rgbaData []byte, width, height int) ([]byte, error) {
@@ -264,6 +282,18 @@ func stringFrom(cfg map[string]interface{}, key, fallback string) string {
 	if v, ok := cfg[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
+		}
+	}
+	return fallback
+}
+
+func boolFrom(cfg map[string]interface{}, key string, fallback bool) bool {
+	if cfg == nil {
+		return fallback
+	}
+	if v, ok := cfg[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
 		}
 	}
 	return fallback

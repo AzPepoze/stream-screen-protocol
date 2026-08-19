@@ -20,6 +20,8 @@ func (e *Encoder) Encode(_ []byte, _, _ int) ([]byte, error) {
 	return nil, fmt.Errorf("gstreamer h264 encoder backend is unavailable")
 }
 
+func (e *Encoder) ForceKeyframe() error { return nil }
+
 func (e *Encoder) Close() error { return nil }
 
 func (d *Decoder) Decode(_ []byte, _, _ int) ([]byte, error) {

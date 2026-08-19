@@ -73,6 +73,12 @@ func (s *Sender) listenForNACKs() {
 				}
 				s.applyControlFeedback(addr, feedback)
 
+			case stream.CSPPacketTypeKeyframeReq:
+				s.touchViewer(addr)
+				reason, _ := stream.UnmarshalKeyframeRequest(buf[:n])
+				logger.Info("server", "keyframe requested by %s (reason: %s)", addr.String(), reason)
+				_ = s.ForceKeyframe()
+
 			case stream.CSPPacketTypeProbe:
 				s.touchViewer(addr)
 				_, _ = s.conn.WriteToUDP(stream.MarshalProbeReply(h.FrameSeq, h.Timestamp), addr)

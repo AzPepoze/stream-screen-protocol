@@ -36,6 +36,8 @@ type Sender struct {
 	blockyPipeline *blocky.ServerPipeline
 	h264Pipeline   *videoh264.ServerPipeline
 	audioCancel    context.CancelFunc
+	keyframeMu     sync.Mutex
+	lastKeyframeAt time.Time
 }
 
 func NewSender(cfg config.ServerConfig) (*Sender, error) {
@@ -43,6 +45,7 @@ func NewSender(cfg config.ServerConfig) (*Sender, error) {
 	if err != nil {
 		return nil, err
 	}
+	_ = conn.SetReadBuffer(4 * 1024 * 1024)
 	_ = conn.SetWriteBuffer(4 * 1024 * 1024)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -254,6 +257,25 @@ func (s *Sender) activeDestination() *net.UDPAddr {
 		return nil
 	}
 	return viewers[0].addr
+}
+
+func (s *Sender) ForceKeyframe() error {
+	s.keyframeMu.Lock()
+	now := time.Now()
+	if now.Sub(s.lastKeyframeAt) < 500*time.Millisecond {
+		s.keyframeMu.Unlock()
+		return nil
+	}
+	s.lastKeyframeAt = now
+	s.keyframeMu.Unlock()
+
+	s.cfgMu.RLock()
+	h264p := s.h264Pipeline
+	s.cfgMu.RUnlock()
+	if h264p != nil {
+		return h264p.ForceKeyframe()
+	}
+	return nil
 }
 
 func (s *Sender) setDestinationAndSeen(addr *net.UDPAddr) {

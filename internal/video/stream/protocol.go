@@ -7,19 +7,20 @@ import (
 
 // CSP constants
 const (
-	CSPVersion             = 1
-	CSPHeaderSize          = 20
-	CSPMaxPacketSize       = 1450 // Safe MTU
-	CSPMaxPayloadSize      = CSPMaxPacketSize - CSPHeaderSize
-	CSPPacketTypeData      = 1
-	CSPPacketTypeNACK      = 2
-	CSPPacketTypeControl   = 3
-	CSPPacketTypeJoin      = 4
-	CSPPacketTypeVideoInfo = 5 // Server sends video resolution/fps/gridSize to client
-	CSPPacketTypeTile      = 6 // Server sends individual tile data
-	CSPPacketTypeTileReq   = 7 // Client requests missing tiles
-	CSPPacketTypeAudioInfo = 8 // Server sends audio format metadata to client
-	CSPPacketTypeAudioData = 9 // Server sends encoded audio payload
+	CSPVersion               = 1
+	CSPHeaderSize            = 20
+	CSPMaxPacketSize         = 1450 // Safe MTU
+	CSPMaxPayloadSize        = CSPMaxPacketSize - CSPHeaderSize
+	CSPPacketTypeData        = 1
+	CSPPacketTypeNACK        = 2
+	CSPPacketTypeControl     = 3
+	CSPPacketTypeJoin        = 4
+	CSPPacketTypeVideoInfo   = 5  // Server sends video resolution/fps/gridSize to client
+	CSPPacketTypeTile        = 6  // Server sends individual tile data
+	CSPPacketTypeTileReq     = 7  // Client requests missing tiles
+	CSPPacketTypeAudioInfo   = 8  // Server sends audio format metadata to client
+	CSPPacketTypeAudioData   = 9  // Server sends encoded audio payload
+	CSPPacketTypeKeyframeReq = 13 // Client requests instantaneous keyframe (PLI)
 )
 
 // PacketHeader represents the CSP packet header.
@@ -335,4 +336,39 @@ func UnmarshalAudioInfo(buf []byte) (sampleRate, channels, frameMS, bitrateKbps 
 	}
 	codecName = string(buf[CSPHeaderSize+17 : CSPHeaderSize+17+codecNameLen])
 	return sampleRate, channels, frameMS, bitrateKbps, codecName, nil
+}
+
+// MarshalKeyframeRequest serializes an upstream keyframe/PLI request.
+func MarshalKeyframeRequest(reason string) []byte {
+	buf := make([]byte, CSPHeaderSize+1+len(reason))
+	h := PacketHeader{
+		Version:    CSPVersion,
+		PacketType: CSPPacketTypeKeyframeReq,
+		Timestamp:  NowTimestampMS(),
+	}
+	h.Marshal(buf[:CSPHeaderSize])
+	buf[CSPHeaderSize] = uint8(len(reason))
+	copy(buf[CSPHeaderSize+1:], []byte(reason))
+	return buf
+}
+
+// UnmarshalKeyframeRequest deserializes an upstream keyframe request.
+func UnmarshalKeyframeRequest(buf []byte) (reason string, err error) {
+	if len(buf) < CSPHeaderSize {
+		return "", fmt.Errorf("buffer too small for KeyframeRequest: %d", len(buf))
+	}
+	var h PacketHeader
+	if err := h.Unmarshal(buf[:CSPHeaderSize]); err != nil {
+		return "", err
+	}
+	if h.PacketType != CSPPacketTypeKeyframeReq {
+		return "", fmt.Errorf("not a KeyframeRequest packet: %d", h.PacketType)
+	}
+	if len(buf) > CSPHeaderSize {
+		reasonLen := int(buf[CSPHeaderSize])
+		if len(buf) >= CSPHeaderSize+1+reasonLen {
+			reason = string(buf[CSPHeaderSize+1 : CSPHeaderSize+1+reasonLen])
+		}
+	}
+	return reason, nil
 }

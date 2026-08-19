@@ -75,19 +75,15 @@ func fecGroupForLoss(lossPermille uint16) int {
 
 func pressureToGap(pressure int) time.Duration {
 	switch {
-	case pressure < 20:
+	case pressure < 30:
 		return 0
-	case pressure < 35:
-		return 40 * time.Microsecond
 	case pressure < 50:
-		return 90 * time.Microsecond
-	case pressure < 65:
-		return 180 * time.Microsecond
-	case pressure < 80:
-		return 320 * time.Microsecond
-	case pressure < 90:
-		return 500 * time.Microsecond
+		return 10 * time.Microsecond
+	case pressure < 70:
+		return 25 * time.Microsecond
+	case pressure < 85:
+		return 50 * time.Microsecond
 	default:
-		return 800 * time.Microsecond
+		return 100 * time.Microsecond
 	}
 }

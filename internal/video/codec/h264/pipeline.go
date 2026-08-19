@@ -23,6 +23,16 @@ func (p *ServerPipeline) SendFrame(frameData []byte, width, height int) ([]byte,
 	return p.encoder.Encode(frameData, width, height)
 }
 
+func (p *ServerPipeline) ForceKeyframe() error {
+	if p.encoder == nil {
+		return nil
+	}
+	if kr, ok := p.encoder.(KeyframeRequester); ok {
+		return kr.ForceKeyframe()
+	}
+	return nil
+}
+
 func (p *ServerPipeline) Close() error {
 	if p.encoder != nil {
 		return p.encoder.Close()

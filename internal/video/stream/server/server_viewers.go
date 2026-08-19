@@ -358,9 +358,6 @@ func (s *Sender) sendBatch(viewer *viewerState, batch packetBatch) {
 	}
 	gap := viewer.pacing(batch.class)
 	for _, packet := range batch.packets {
-		if !batch.deadline.IsZero() && time.Now().After(batch.deadline) {
-			return
-		}
 		_, _ = s.conn.WriteToUDP(packet, viewer.addr)
 		if gap > 0 {
 			time.Sleep(gap)

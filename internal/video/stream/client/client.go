@@ -14,6 +14,7 @@ import (
 	"streamscreen/internal/logger"
 	"streamscreen/internal/video/codec/blocky"
 	videoh264 "streamscreen/internal/video/codec/h264"
+	"streamscreen/internal/video/stream"
 )
 
 // ClientReceiver handles jitter buffering, FEC recovery, NACKs, and frame decoding.
@@ -41,26 +42,28 @@ type ClientReceiver struct {
 	videoFPS      uint32
 	codecName     string
 	videoInfoMu   sync.RWMutex
-	blockyPipeline *blocky.ClientPipeline
-	h264Pipeline  *videoh264.ClientPipeline
-	h264ErrMu     sync.Mutex
-	h264ErrCount  uint64
-	h264ErrLogAt  time.Time
+	blockyPipeline    *blocky.ClientPipeline
+	h264Pipeline      *videoh264.ClientPipeline
+	h264ErrMu         sync.Mutex
+	h264ErrCount      uint64
+	h264ErrLogAt      time.Time
+	pliMu             sync.Mutex
+	lastPliAt         time.Time
 	canvasRefreshFlag uint32
 	frameDirty        atomic.Bool
 	autoTuneByFPS     bool
 	audioInfoMu       sync.RWMutex
-	audioCodec    string
-	audioRate     uint32
-	audioChannels uint32
-	audioFrameMS  uint32
-	audioBitrate  uint32
-	audioEnabled  bool
-	audioDecoder  *opus.Decoder
-	audioPlayer   playback.Player
-	audioFrames   chan []byte
-	audioFragMu   sync.Mutex
-	audioFragBuf  map[uint32]*audioFragmentBuffer
+	audioCodec        string
+	audioRate         uint32
+	audioChannels     uint32
+	audioFrameMS      uint32
+	audioBitrate      uint32
+	audioEnabled      bool
+	audioDecoder      *opus.Decoder
+	audioPlayer       playback.Player
+	audioFrames       chan []byte
+	audioFragMu       sync.Mutex
+	audioFragBuf      map[uint32]*audioFragmentBuffer
 
 	ccFrameDrops      uint64
 	ccAudioDrops      uint64
@@ -92,6 +95,7 @@ func NewClientReceiver(cfg config.ClientConfig) (*ClientReceiver, error) {
 		return nil, err
 	}
 	_ = conn.SetReadBuffer(4 * 1024 * 1024)
+	_ = conn.SetWriteBuffer(4 * 1024 * 1024)
 
 	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", cfg.ServerHost, cfg.Port))
 	if err != nil {
@@ -289,6 +293,25 @@ func (r *ClientReceiver) flushFrames() {
 		default:
 			return
 		}
+	}
+}
+
+func (r *ClientReceiver) RequestKeyframe(reason string) {
+	r.pliMu.Lock()
+	now := time.Now()
+	if now.Sub(r.lastPliAt) < 1000*time.Millisecond {
+		r.pliMu.Unlock()
+		return
+	}
+	r.lastPliAt = now
+	r.pliMu.Unlock()
+
+	packet := stream.MarshalKeyframeRequest(reason)
+	_ = r.conn.SetWriteDeadline(time.Time{})
+	if _, err := r.conn.WriteToUDP(packet, r.serverAddr); err != nil {
+		logger.Info("client", "failed to send keyframe request: %v", err)
+	} else {
+		logger.Info("client", "requested keyframe (PLI) from server: reason=%s", reason)
 	}
 }
 

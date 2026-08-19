@@ -21,6 +21,10 @@ type Encoder interface {
 	Close() error
 }
 
+type KeyframeRequester interface {
+	ForceKeyframe() error
+}
+
 type Decoder interface {
 	Decode(encodedData []byte, width, height int) ([]byte, error)
 	Close() error
