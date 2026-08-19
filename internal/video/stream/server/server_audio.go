@@ -2,11 +2,10 @@ package server
 
 import (
 	"context"
-	"streamscreen/internal/logger"
-	"time"
 
 	"streamscreen/internal/audio/capture"
 	"streamscreen/internal/audio/opus"
+	"streamscreen/internal/logger"
 	"streamscreen/internal/video/stream"
 )
 
@@ -30,7 +29,6 @@ func (s *Sender) StartAudio() error {
 
 	audioCtx, cancel := context.WithCancel(s.ctx)
 	s.audioCancel = cancel
-
 	if err := source.Start(audioCtx); err != nil {
 		_ = encoder.Close()
 		_ = source.Close()
@@ -56,8 +54,7 @@ func (s *Sender) StartAudio() error {
 				if !ok {
 					return
 				}
-				destAddr := s.activeDestination()
-				if destAddr == nil {
+				if s.viewerCount() == 0 {
 					continue
 				}
 
@@ -65,13 +62,14 @@ func (s *Sender) StartAudio() error {
 				if err != nil {
 					continue
 				}
-
 				audioSeq++
 				totalPackets := uint32((len(encoded) + stream.CSPMaxPayloadSize - 1) / stream.CSPMaxPayloadSize)
 				if totalPackets == 0 {
 					continue
 				}
 
+				timestamp := stream.NowTimestampMS()
+				packets := make([][]byte, 0, totalPackets)
 				for packetID := uint32(0); packetID < totalPackets; packetID++ {
 					start := packetID * stream.CSPMaxPayloadSize
 					end := start + stream.CSPMaxPayloadSize
@@ -79,23 +77,20 @@ func (s *Sender) StartAudio() error {
 						end = uint32(len(encoded))
 					}
 					payload := encoded[start:end]
-
 					header := stream.PacketHeader{
 						Version:      stream.CSPVersion,
 						PacketType:   stream.CSPPacketTypeAudioData,
 						FrameSeq:     audioSeq,
 						PacketID:     packetID,
 						TotalPackets: totalPackets,
+						Timestamp:    timestamp,
 					}
 					buf := make([]byte, stream.CSPHeaderSize+len(payload))
 					header.Marshal(buf[:stream.CSPHeaderSize])
 					copy(buf[stream.CSPHeaderSize:], payload)
-
-					_, _ = s.conn.WriteToUDP(buf, destAddr)
-					if gap := s.audioPacketGap(); gap > 0 {
-						time.Sleep(gap)
-					}
+					packets = append(packets, buf)
 				}
+				s.broadcastAudioBatch(packets, audioSeq)
 			}
 		}
 	}()
