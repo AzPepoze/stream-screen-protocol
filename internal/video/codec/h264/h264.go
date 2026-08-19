@@ -25,6 +25,12 @@ type KeyframeRequester interface {
 	ForceKeyframe() error
 }
 
+// BitrateAdjuster is implemented by encoder backends that can safely change
+// their target bitrate without rebuilding the pipeline.
+type BitrateAdjuster interface {
+	SetBitrateKbps(bitrate int) error
+}
+
 type Decoder interface {
 	Decode(encodedData []byte, width, height int) ([]byte, error)
 	Close() error
