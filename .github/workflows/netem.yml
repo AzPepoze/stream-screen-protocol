@@ -26,6 +26,17 @@ jobs:
           docker version
           docker compose version
 
+      - name: Verify runtime Compose contains relays only
+        run: |
+          docker compose -f tests/netem/compose.yml config
+          test "$(docker compose -f tests/netem/compose.yml config --services | sort | tr '\n' ' ')" = "relay-a relay-b "
+
+      - name: Verify local client configs and relay helpers
+        run: |
+          python3 -m json.tool tests/netem/client-a/client.config.json >/dev/null
+          python3 -m json.tool tests/netem/client-b/client.config.json >/dev/null
+          go test ./tests/netem/cmd/relay ./tests/netem/cmd/echo
+
       - name: Start relay containers with CI-only echo target
         run: docker compose -f tests/netem/compose.yml -f tests/netem/compose.smoke.yml up -d --build
 
