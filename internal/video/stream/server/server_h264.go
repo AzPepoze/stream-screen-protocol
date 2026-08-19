@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"time"
 
 	videoh264 "streamscreen/internal/video/codec/h264"
 	"streamscreen/internal/video/stream"
@@ -28,13 +27,12 @@ func (s *Sender) EnsureH264Pipeline() error {
 	return nil
 }
 
-// SendH264Frame encodes a raw RGBA frame to H264 and sends as data packets.
+// SendH264Frame encodes once, packetizes once, then fans the immutable packet
+// batch out to independent viewer queues.
 func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
-	destAddr := s.activeDestination()
-	if destAddr == nil {
-		return nil // No destination, don't send
+	if s.viewerCount() == 0 {
+		return nil
 	}
-
 	if err := s.EnsureH264Pipeline(); err != nil {
 		return err
 	}
@@ -43,17 +41,20 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 	if err != nil {
 		return fmt.Errorf("h264 encoding failed: %w", err)
 	}
+	if len(encodedData) == 0 {
+		return nil
+	}
 
 	s.frameSeq++
+	timestamp := stream.NowTimestampMS()
 	totalPackets := uint32((len(encodedData) + stream.CSPMaxPayloadSize - 1) / stream.CSPMaxPayloadSize)
-	packetGap := s.videoPacketGap()
+	packets := make([][]byte, 0, totalPackets)
 	for packetID := uint32(0); packetID < totalPackets; packetID++ {
 		start := packetID * stream.CSPMaxPayloadSize
 		end := start + stream.CSPMaxPayloadSize
 		if end > uint32(len(encodedData)) {
 			end = uint32(len(encodedData))
 		}
-
 		payload := encodedData[start:end]
 		header := stream.PacketHeader{
 			Version:      stream.CSPVersion,
@@ -61,27 +62,24 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 			FrameSeq:     s.frameSeq,
 			PacketID:     packetID,
 			TotalPackets: totalPackets,
+			Timestamp:    timestamp,
 		}
-
 		buf := make([]byte, stream.CSPHeaderSize+len(payload))
 		header.Marshal(buf[:stream.CSPHeaderSize])
 		copy(buf[stream.CSPHeaderSize:], payload)
 		s.buffer.Put(s.frameSeq, packetID, buf)
-		if _, err := s.conn.WriteToUDP(buf, destAddr); err != nil {
-			return err
-		}
-		if packetGap > 0 {
-			time.Sleep(packetGap)
-		}
+		packets = append(packets, buf)
 	}
 
+	s.broadcastVideoBatch(packets, s.frameSeq)
 	return nil
 }
 
-// CloseH264Pipeline stops the H264 pipeline.
 func (s *Sender) CloseH264Pipeline() error {
 	if s.h264Pipeline != nil {
-		return s.h264Pipeline.Close()
+		err := s.h264Pipeline.Close()
+		s.h264Pipeline = nil
+		return err
 	}
 	return nil
 }
