@@ -1,10 +1,11 @@
 package client
 
 import (
-	"streamscreen/internal/logger"
-	"streamscreen/internal/video/stream"
 	"sync/atomic"
 	"time"
+
+	"streamscreen/internal/logger"
+	"streamscreen/internal/video/stream"
 )
 
 // joinLoop sends JOIN packets to server every 1 second.
@@ -59,10 +60,12 @@ func (r *ClientReceiver) controlLoop() {
 			received := atomic.SwapUint64(&r.ccPacketsReceived, 0)
 			bytesReceived := atomic.SwapUint64(&r.ccBytesReceived, 0)
 			missing := atomic.SwapUint64(&r.ccNACKSent, 0)
+			fecRecovered := atomic.SwapUint64(&r.ccFECRecovered, 0)
+			observedLoss := missing + fecRecovered
 
 			var lossPermille uint16
-			if total := received + missing; total > 0 {
-				loss := (missing * 1000) / total
+			if total := received + observedLoss; total > 0 {
+				loss := (observedLoss * 1000) / total
 				if loss > 1000 {
 					loss = 1000
 				}
