@@ -3,54 +3,51 @@ package server
 import (
 	"context"
 	"fmt"
-	"streamscreen/internal/logger"
 	"net"
 	"sync"
 	"time"
 
 	"streamscreen/internal/config"
-	videoh264 "streamscreen/internal/video/codec/h264"
+	"streamscreen/internal/logger"
 	"streamscreen/internal/video/codec/blocky"
+	videoh264 "streamscreen/internal/video/codec/h264"
+	"streamscreen/internal/video/stream"
 )
 
 // Sender handles video encoding and custom protocol transmission.
 type Sender struct {
-	cfg               config.ServerConfig
-	conn              *net.UDPConn
-	destAddr          *net.UDPAddr
-	destAddrMu        sync.RWMutex
-	captureStop       func()
-	frameSeq          uint32
-	buffer            *PacketBuffer
-	tileBuffer        *TileBuffer // For tile-based delta encoding
-	ctx               context.Context
-	cancel            context.CancelFunc
-	minFramePeriod    time.Duration
-	lastClientSeenAt  time.Time
-	clientTimeout     time.Duration
-	lastVideoInfoSent time.Time // Track when VideoInfo was last sent to avoid spamming
-	lastAudioInfoSent time.Time // Track when AudioInfo was last sent to avoid spamming
-	codecName         string    // Transmission codec (blocky or h264)
-	blockyPipeline    *blocky.ServerPipeline
-	h264Pipeline      *videoh264.ServerPipeline
-	audioCancel       context.CancelFunc
-	ccMu              sync.RWMutex
-	ccVideoGap        time.Duration
-	ccAudioGap        time.Duration
-	ccLastLogAt       time.Time
+	cfg  config.ServerConfig
+	conn *net.UDPConn
+
+	viewersMu sync.RWMutex
+	viewers   map[string]*viewerState
+
+	captureStop    func()
+	frameSeq       uint32
+	buffer         *PacketBuffer
+	tileBuffer     *TileBuffer
+	ctx            context.Context
+	cancel         context.CancelFunc
+	minFramePeriod time.Duration
+	frameDeadline  time.Duration
+	clientTimeout  time.Duration
+	codecName      string
+	blockyPipeline *blocky.ServerPipeline
+	h264Pipeline   *videoh264.ServerPipeline
+	audioCancel    context.CancelFunc
 }
 
 func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
-	var addr *net.UDPAddr
+	var initialAddr *net.UDPAddr
 	if dest != "" {
 		var err error
-		addr, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", dest, cfg.Port))
+		initialAddr, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", dest, cfg.Port))
 		if err != nil {
 			return nil, err
 		}
-		if addr.IP.IsLoopback() && addr.Port == cfg.Port {
-			logger.Info("Sender: configured destination %s appears to be local; ignoring to avoid self-send", addr.String())
-			addr = nil
+		if initialAddr.IP.IsLoopback() && initialAddr.Port == cfg.Port {
+			logger.Info("Sender: configured destination %s appears to be local; ignoring to avoid self-send", initialAddr.String())
+			initialAddr = nil
 		}
 	}
 
@@ -58,13 +55,10 @@ func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Try to increase send buffer for high-throughput streaming.
 	_ = conn.SetWriteBuffer(4 * 1024 * 1024)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Initialize tile buffer for delta encoding
 	var gridSize int
 	if v, ok := cfg.Capture.RGBACodecConfig["tile_size"]; ok {
 		if val, ok := v.(int); ok {
@@ -74,87 +68,92 @@ func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
 		}
 	}
 	if gridSize == 0 {
-		gridSize = 10 // Default to 10x10 grid
+		gridSize = 10
 	}
 	tileBuffer := NewTileBuffer(gridSize, cfg.Capture.Width, cfg.Capture.Height)
-
-	// Initialize blocky pipeline
 	blockyPipeline := blocky.NewServerPipeline(tileBuffer, cfg.Capture.RGBACodecConfig)
 
-	// Get codec name from config (default: blocky)
 	codecName := cfg.Capture.Codec
 	if codecName == "" {
 		codecName = "blocky"
 	}
 
-	return &Sender{
+	framePeriod := time.Second / time.Duration(cfg.Capture.FPS)
+	s := &Sender{
 		cfg:            cfg,
 		conn:           conn,
-		destAddr:       addr,
+		viewers:        make(map[string]*viewerState),
 		buffer:         NewPacketBuffer(50000),
 		tileBuffer:     tileBuffer,
 		ctx:            ctx,
 		cancel:         cancel,
-		minFramePeriod: time.Second / time.Duration(cfg.Capture.FPS),
+		minFramePeriod: framePeriod,
+		frameDeadline:  frameDeadlineForFPS(cfg.Capture.FPS),
 		clientTimeout:  5 * time.Second,
 		codecName:      codecName,
 		blockyPipeline: blockyPipeline,
-	}, nil
+	}
+	if initialAddr != nil {
+		s.registerViewer(initialAddr)
+	}
+	return s, nil
+}
+
+func frameDeadlineForFPS(fps int) time.Duration {
+	if fps <= 0 {
+		fps = 60
+	}
+	deadline := 4 * (time.Second / time.Duration(fps))
+	if deadline < 25*time.Millisecond {
+		deadline = 25 * time.Millisecond
+	}
+	if deadline > 100*time.Millisecond {
+		deadline = 100 * time.Millisecond
+	}
+	return deadline
 }
 
 func (s *Sender) StartControlPlane() {
 	go s.listenForNACKs()
+	go s.viewerCleanupLoop()
 }
 
-// ProcessRGBAFrame routes raw RGBA frames through the configured transmission codec.
+// ProcessRGBAFrame routes one captured frame through the selected codec. A
+// frame is captured/encoded once and the resulting packet batch is fanned out
+// to all active viewers by independent per-viewer send queues.
 func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
+	if s.viewerCount() == 0 {
+		return
+	}
 	expectedSize := s.cfg.Capture.Width * s.cfg.Capture.Height * 4
 	if len(rgbaData) != expectedSize {
 		logger.Info("[server] WARN: buffer size mismatch - got %d bytes, expected %d (%dx%dx4)", len(rgbaData), expectedSize, s.cfg.Capture.Width, s.cfg.Capture.Height)
 		return
 	}
 
-	// Handle based on codec type
-	if s.codecName == "blocky" && s.blockyPipeline != nil {
-		// blocky tile-based transmission
-		changedTiles := s.tileBuffer.UpdateTiles(rgbaData)
-		if changedTiles == nil {
-			changedTiles = []uint16{}
-		}
-		tilesToSend := s.tileBuffer.GetTilesToSend(changedTiles)
-
-		if len(tilesToSend) > 0 {
-			destAddr := s.activeDestination()
-			if destAddr != nil {
-				s.frameSeq++
-				if err := s.blockyPipeline.SendTilesBurstWithPacing(s.frameSeq, tilesToSend, s.conn, destAddr, s.videoPacketGap()); err != nil {
-					logger.Info("[server] blocky send failed: %v", err)
-				}
-			}
-		}
-	} else if s.codecName == "h264" {
-		// H264 frame-based transmission: encode and send full frame packets.
+	if s.codecName == "h264" {
 		if err := s.SendH264Frame(rgbaData, s.cfg.Capture.Width, s.cfg.Capture.Height); err != nil {
 			logger.Info("[server] h264 send failed: %v", err)
 		}
-	} else {
-		// Fallback to tile-based (RGBA)
-		changedTiles := s.tileBuffer.UpdateTiles(rgbaData)
-		if changedTiles == nil {
-			changedTiles = []uint16{}
-		}
-		tilesToSend := s.tileBuffer.GetTilesToSend(changedTiles)
-
-		if len(tilesToSend) > 0 {
-			destAddr := s.activeDestination()
-			if destAddr != nil {
-				s.frameSeq++
-				if err := s.blockyPipeline.SendTilesBurstWithPacing(s.frameSeq, tilesToSend, s.conn, destAddr, s.videoPacketGap()); err != nil {
-					logger.Info("[server] fallback send failed: %v", err)
-				}
-			}
-		}
+		return
 	}
+
+	changedTiles := s.tileBuffer.UpdateTiles(rgbaData)
+	if changedTiles == nil {
+		changedTiles = []uint16{}
+	}
+	tilesToSend := s.tileBuffer.GetTilesToSend(changedTiles)
+	if len(tilesToSend) == 0 {
+		return
+	}
+
+	s.frameSeq++
+	packets, err := s.blockyPipeline.BuildTilesBatch(s.frameSeq, tilesToSend, stream.NowTimestampMS())
+	if err != nil {
+		logger.Info("[server] blocky packetization failed: %v", err)
+		return
+	}
+	s.broadcastVideoBatch(packets, s.frameSeq)
 }
 
 func (s *Sender) Stop() error {
@@ -162,6 +161,7 @@ func (s *Sender) Stop() error {
 	if s.audioCancel != nil {
 		s.audioCancel()
 	}
+	s.stopAllViewers()
 	_ = s.CloseH264Pipeline()
 	if s.captureStop != nil {
 		s.captureStop()
@@ -169,24 +169,16 @@ func (s *Sender) Stop() error {
 	return s.conn.Close()
 }
 
+// activeDestination is retained for older internal call sites while the
+// transport migrates to batch fan-out. New media paths should use viewers.
 func (s *Sender) activeDestination() *net.UDPAddr {
-	s.destAddrMu.Lock()
-	defer s.destAddrMu.Unlock()
-
-	if s.destAddr == nil {
+	viewers := s.activeViewers()
+	if len(viewers) == 0 {
 		return nil
 	}
-	if !s.lastClientSeenAt.IsZero() && time.Since(s.lastClientSeenAt) > s.clientTimeout {
-		logger.Info("[server] client timed out after %s, stopping stream until reconnect", s.clientTimeout)
-		s.destAddr = nil
-		return nil
-	}
-	return s.destAddr
+	return viewers[0].addr
 }
 
 func (s *Sender) setDestinationAndSeen(addr *net.UDPAddr) {
-	s.destAddrMu.Lock()
-	defer s.destAddrMu.Unlock()
-	s.destAddr = addr
-	s.lastClientSeenAt = time.Now()
+	s.registerViewer(addr)
 }
