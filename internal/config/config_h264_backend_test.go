@@ -14,6 +14,10 @@ func TestValidateH264BackendValue(t *testing.T) {
 		{name: "auto", cfg: map[string]interface{}{"h264_encoder_backend": "auto"}, key: "h264_encoder_backend", wantErr: false},
 		{name: "gstreamer", cfg: map[string]interface{}{"h264_encoder_backend": "gstreamer"}, key: "h264_encoder_backend", wantErr: false},
 		{name: "ffmpeg", cfg: map[string]interface{}{"h264_encoder_backend": "ffmpeg"}, key: "h264_encoder_backend", wantErr: false},
+		{name: "nvenc encoder", cfg: map[string]interface{}{"h264_encoder_backend": "nvenc"}, key: "h264_encoder_backend", wantErr: false},
+		{name: "amf encoder", cfg: map[string]interface{}{"h264_encoder_backend": "amf"}, key: "h264_encoder_backend", wantErr: false},
+		{name: "vaapi encoder", cfg: map[string]interface{}{"h264_encoder_backend": "vaapi"}, key: "h264_encoder_backend", wantErr: false},
+		{name: "nvenc decoder unsupported", cfg: map[string]interface{}{"h264_decoder_backend": "nvenc"}, key: "h264_decoder_backend", wantErr: true},
 		{name: "invalid", cfg: map[string]interface{}{"h264_encoder_backend": "abc"}, key: "h264_encoder_backend", wantErr: true},
 		{name: "wrong type", cfg: map[string]interface{}{"h264_encoder_backend": 1}, key: "h264_encoder_backend", wantErr: true},
 	}
