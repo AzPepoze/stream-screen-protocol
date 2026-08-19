@@ -17,15 +17,16 @@ const (
 	CSPMaxFECGroupSize  = 16
 )
 
-// ExtendedControlFeedback keeps the original queue/drop feedback and adds
-// network measurements that can drive per-viewer pacing decisions.
+const ControlFeedbackPayloadSize = 28
+
+// ExtendedControlFeedback is the unified congestion and network delivery feedback.
 type ExtendedControlFeedback struct {
 	ControlFeedback
 	RTTMS                uint16
 	JitterMS             uint16
 	LossPermille         uint16
-	DeliveryRateKbps     uint32
 	ResidualLossPermille uint16
+	DeliveryRateKbps     uint32
 }
 
 type XORFEC struct {
@@ -47,76 +48,48 @@ func TimestampAgeMS(timestamp uint32) uint32 {
 	return NowTimestampMS() - timestamp
 }
 
-// MarshalExtendedControlFeedback uses payload version 2 while keeping the
-// original CSP header and v1 fields at their existing offsets.
 func MarshalExtendedControlFeedback(f ExtendedControlFeedback) []byte {
-	const payloadSize = 30
-	buf := make([]byte, CSPHeaderSize+payloadSize)
+	buf := make([]byte, CSPHeaderSize+ControlFeedbackPayloadSize)
 	h := PacketHeader{Version: CSPVersion, PacketType: CSPPacketTypeControl}
 	h.Marshal(buf[:CSPHeaderSize])
-	buf[CSPHeaderSize] = 2
-	buf[CSPHeaderSize+1] = f.FrameQueuePercent
-	buf[CSPHeaderSize+2] = f.AudioQueuePercent
+	buf[CSPHeaderSize] = f.FrameQueuePercent
+	buf[CSPHeaderSize+1] = f.AudioQueuePercent
+	binary.BigEndian.PutUint16(buf[CSPHeaderSize+2:CSPHeaderSize+4], f.RTTMS)
 	binary.BigEndian.PutUint32(buf[CSPHeaderSize+4:CSPHeaderSize+8], f.FrameDrops)
 	binary.BigEndian.PutUint32(buf[CSPHeaderSize+8:CSPHeaderSize+12], f.AudioDrops)
 	binary.BigEndian.PutUint32(buf[CSPHeaderSize+12:CSPHeaderSize+16], f.NACKSent)
-	binary.BigEndian.PutUint16(buf[CSPHeaderSize+16:CSPHeaderSize+18], f.RTTMS)
-	binary.BigEndian.PutUint16(buf[CSPHeaderSize+18:CSPHeaderSize+20], f.JitterMS)
-	binary.BigEndian.PutUint16(buf[CSPHeaderSize+20:CSPHeaderSize+22], f.LossPermille)
+	binary.BigEndian.PutUint16(buf[CSPHeaderSize+16:CSPHeaderSize+18], f.JitterMS)
+	binary.BigEndian.PutUint16(buf[CSPHeaderSize+18:CSPHeaderSize+20], f.LossPermille)
+	binary.BigEndian.PutUint16(buf[CSPHeaderSize+20:CSPHeaderSize+22], f.ResidualLossPermille)
 	binary.BigEndian.PutUint32(buf[CSPHeaderSize+24:CSPHeaderSize+28], f.DeliveryRateKbps)
-	binary.BigEndian.PutUint16(buf[CSPHeaderSize+28:CSPHeaderSize+30], f.ResidualLossPermille)
 	return buf
 }
 
-// UnmarshalExtendedControlFeedback accepts both v1 and v2 feedback so older
-// clients can still connect while the server gains richer measurements.
 func UnmarshalExtendedControlFeedback(buf []byte) (ExtendedControlFeedback, error) {
-	if len(buf) < CSPHeaderSize+16 {
-		return ExtendedControlFeedback{}, fmt.Errorf("buffer too small for control feedback: %d", len(buf))
+	if len(buf) < CSPHeaderSize+ControlFeedbackPayloadSize {
+		return ExtendedControlFeedback{}, fmt.Errorf("buffer too small for control feedback: %d (want %d)", len(buf), CSPHeaderSize+ControlFeedbackPayloadSize)
 	}
 	var h PacketHeader
 	if err := h.Unmarshal(buf[:CSPHeaderSize]); err != nil {
 		return ExtendedControlFeedback{}, err
 	}
 	if h.PacketType != CSPPacketTypeControl {
-		return ExtendedControlFeedback{}, fmt.Errorf("not a control packet")
-	}
-
-	version := buf[CSPHeaderSize]
-	if version == 1 {
-		legacy, err := UnmarshalControlFeedback(buf)
-		if err != nil {
-			return ExtendedControlFeedback{}, err
-		}
-		return ExtendedControlFeedback{ControlFeedback: legacy}, nil
-	}
-	if version != 2 {
-		return ExtendedControlFeedback{}, fmt.Errorf("unsupported control payload version: %d", version)
-	}
-	if len(buf) < CSPHeaderSize+28 {
-		return ExtendedControlFeedback{}, fmt.Errorf("buffer too small for v2 control feedback: %d", len(buf))
-	}
-
-	var residualLoss uint16
-	if len(buf) >= CSPHeaderSize+30 {
-		residualLoss = binary.BigEndian.Uint16(buf[CSPHeaderSize+28 : CSPHeaderSize+30])
-	} else {
-		residualLoss = binary.BigEndian.Uint16(buf[CSPHeaderSize+20 : CSPHeaderSize+22])
+		return ExtendedControlFeedback{}, fmt.Errorf("not a control packet: %d", h.PacketType)
 	}
 
 	return ExtendedControlFeedback{
 		ControlFeedback: ControlFeedback{
-			FrameQueuePercent: buf[CSPHeaderSize+1],
-			AudioQueuePercent: buf[CSPHeaderSize+2],
+			FrameQueuePercent: buf[CSPHeaderSize],
+			AudioQueuePercent: buf[CSPHeaderSize+1],
 			FrameDrops:        binary.BigEndian.Uint32(buf[CSPHeaderSize+4 : CSPHeaderSize+8]),
 			AudioDrops:        binary.BigEndian.Uint32(buf[CSPHeaderSize+8 : CSPHeaderSize+12]),
 			NACKSent:          binary.BigEndian.Uint32(buf[CSPHeaderSize+12 : CSPHeaderSize+16]),
 		},
-		RTTMS:                binary.BigEndian.Uint16(buf[CSPHeaderSize+16 : CSPHeaderSize+18]),
-		JitterMS:             binary.BigEndian.Uint16(buf[CSPHeaderSize+18 : CSPHeaderSize+20]),
-		LossPermille:         binary.BigEndian.Uint16(buf[CSPHeaderSize+20 : CSPHeaderSize+22]),
+		RTTMS:                binary.BigEndian.Uint16(buf[CSPHeaderSize+2 : CSPHeaderSize+4]),
+		JitterMS:             binary.BigEndian.Uint16(buf[CSPHeaderSize+16 : CSPHeaderSize+18]),
+		LossPermille:         binary.BigEndian.Uint16(buf[CSPHeaderSize+18 : CSPHeaderSize+20]),
+		ResidualLossPermille: binary.BigEndian.Uint16(buf[CSPHeaderSize+20 : CSPHeaderSize+22]),
 		DeliveryRateKbps:     binary.BigEndian.Uint32(buf[CSPHeaderSize+24 : CSPHeaderSize+28]),
-		ResidualLossPermille: residualLoss,
 	}, nil
 }
 

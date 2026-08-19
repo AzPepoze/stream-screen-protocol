@@ -7,7 +7,7 @@ import (
 
 // CSP constants
 const (
-	CSPVersion               = 1
+	CSPVersion               = 2
 	CSPHeaderSize            = 20
 	CSPMaxPacketSize         = 1450 // Safe MTU
 	CSPMaxPayloadSize        = CSPMaxPacketSize - CSPHeaderSize
@@ -49,6 +49,9 @@ func (h *PacketHeader) Marshal(buf []byte) {
 func (h *PacketHeader) Unmarshal(buf []byte) error {
 	if len(buf) < CSPHeaderSize {
 		return fmt.Errorf("buffer too small for CSP header: %d", len(buf))
+	}
+	if buf[0] != CSPVersion {
+		return fmt.Errorf("unsupported CSP version: got %d want %d", buf[0], CSPVersion)
 	}
 	h.Version = buf[0]
 	h.PacketType = buf[1]

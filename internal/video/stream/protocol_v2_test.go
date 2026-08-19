@@ -14,10 +14,11 @@ func TestExtendedControlFeedbackRoundTrip(t *testing.T) {
 			AudioDrops:        1,
 			NACKSent:          9,
 		},
-		RTTMS:            55,
-		JitterMS:         6,
-		LossPermille:     27,
-		DeliveryRateKbps: 18432,
+		RTTMS:                55,
+		JitterMS:             6,
+		LossPermille:         27,
+		ResidualLossPermille: 12,
+		DeliveryRateKbps:     18432,
 	}
 	got, err := UnmarshalExtendedControlFeedback(MarshalExtendedControlFeedback(want))
 	if err != nil {
@@ -28,17 +29,36 @@ func TestExtendedControlFeedbackRoundTrip(t *testing.T) {
 	}
 }
 
-func TestExtendedControlFeedbackAcceptsV1(t *testing.T) {
-	legacy := ControlFeedback{FrameQueuePercent: 20, NACKSent: 4}
-	got, err := UnmarshalExtendedControlFeedback(MarshalControlFeedback(legacy))
-	if err != nil {
-		t.Fatal(err)
+func TestExtendedControlFeedbackMalformedPayloads(t *testing.T) {
+	valid := MarshalExtendedControlFeedback(ExtendedControlFeedback{
+		ControlFeedback: ControlFeedback{FrameQueuePercent: 50},
+		RTTMS:           30,
+	})
+
+	// 1. Buffer smaller than CSPHeaderSize
+	if _, err := UnmarshalExtendedControlFeedback(valid[:CSPHeaderSize-1]); err == nil {
+		t.Fatal("expected error on buffer smaller than CSP header")
 	}
-	if got.ControlFeedback != legacy {
-		t.Fatalf("got %#v want %#v", got.ControlFeedback, legacy)
+
+	// 2. Buffer smaller than CSPHeaderSize + ControlFeedbackPayloadSize
+	if _, err := UnmarshalExtendedControlFeedback(valid[:len(valid)-1]); err == nil {
+		t.Fatal("expected error on truncated payload")
 	}
-	if got.RTTMS != 0 || got.LossPermille != 0 || got.DeliveryRateKbps != 0 {
-		t.Fatalf("legacy feedback should not invent v2 metrics: %#v", got)
+
+	// 3. Wrong version in header
+	wrongVer := make([]byte, len(valid))
+	copy(wrongVer, valid)
+	wrongVer[0] = 99
+	if _, err := UnmarshalExtendedControlFeedback(wrongVer); err == nil {
+		t.Fatal("expected error on mismatched protocol version")
+	}
+
+	// 4. Wrong packet type
+	wrongType := make([]byte, len(valid))
+	copy(wrongType, valid)
+	wrongType[1] = CSPPacketTypeData
+	if _, err := UnmarshalExtendedControlFeedback(wrongType); err == nil {
+		t.Fatal("expected error on wrong packet type")
 	}
 }
 
