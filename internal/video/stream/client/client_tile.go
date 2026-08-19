@@ -48,7 +48,7 @@ func (tg *TileGrid) SetTile(tileID uint16, pixelData []byte, frameBuffer []byte)
 	defer tg.mu.Unlock()
 
 	if tileID >= uint16(tg.tileCount) {
-		logger.Info("[TILE] ID %d out of range (max %d)", tileID, tg.tileCount)
+		logger.Info("tile", "ID %d out of range (max %d)", tileID, tg.tileCount)
 		return
 	}
 
@@ -81,7 +81,7 @@ func (tg *TileGrid) SetTile(tileID uint16, pixelData []byte, frameBuffer []byte)
 			copy(frameBuffer[dstStart:dstStart+copySize], pixelData[pixelIdx:pixelIdx+copySize])
 			pixelIdx += copySize
 		} else {
-			logger.Info("[TILE] ERROR: bounds check failed - pixelIdx=%d pixelLen=%d OR dstStart=%d frameLen=%d",
+			logger.Info("tile", "ERROR: bounds check failed - pixelIdx=%d pixelLen=%d OR dstStart=%d frameLen=%d",
 				pixelIdx+copySize, len(pixelData), dstStart+copySize, len(frameBuffer))
 			return
 		}

@@ -53,7 +53,7 @@ func (s *Sender) applyControlFeedback(addr *net.UDPAddr, f stream.ExtendedContro
 	viewer.setFECGroupSize(fecGroupSize)
 
 	if pressure >= 20 || f.FrameDrops > 0 || f.AudioDrops > 0 || f.NACKSent > 0 || fecGroupSize > 0 {
-		logger.Info("[server] viewer=%s cc pressure=%d frame_q=%d%% audio_q=%d%% loss=%.1f%% rtt=%dms jitter=%dms rate=%dkbps -> video_gap=%s audio_gap=%s fec_group=%d",
+		logger.Info("server", "viewer=%s cc pressure=%d frame_q=%d%% audio_q=%d%% loss=%.1f%% rtt=%dms jitter=%dms rate=%dkbps -> video_gap=%s audio_gap=%s fec_group=%d",
 			addr.String(), pressure, f.FrameQueuePercent, f.AudioQueuePercent,
 			float64(f.LossPermille)/10.0, f.RTTMS, f.JitterMS, f.DeliveryRateKbps,
 			videoGap, audioGap, fecGroupSize)

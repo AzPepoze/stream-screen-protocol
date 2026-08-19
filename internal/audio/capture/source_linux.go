@@ -38,21 +38,21 @@ func newSource(cfg config.ServerConfig) (Source, error) {
 		return nil, err
 	}
 	if device == offAudioChoice {
-		logger.Info("[audio] linux input source=off (disabled)")
+		logger.Info("audio", "linux input source=off (disabled)")
 		return newDisabledSource(), nil
 	}
 	if device == portalAudioChoice {
 		if _, err := exec.LookPath("pw-record"); err != nil {
 			return nil, fmt.Errorf("portal audio capture requires pw-record in PATH: %w", err)
 		}
-		logger.Info("[audio] linux input source=portal-screencast")
+		logger.Info("audio", "linux input source=portal-screencast")
 		return newLinuxPortalPWRecordSource(cfg), nil
 	}
 
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return nil, fmt.Errorf("audio capture requires ffmpeg in PATH: %w", err)
 	}
-	logger.Info("[audio] linux input source=%s", device)
+	logger.Info("audio", "linux input source=%s", device)
 	return newFFmpegSource(cfg, func() *exec.Cmd {
 		args := []string{
 			"-hide_banner", "-nostdin", "-loglevel", "error",
@@ -89,7 +89,7 @@ func resolveLinuxInputDevice(cfg config.ServerConfig) (string, error) {
 func chooseInteractiveLinuxDevice() (string, error) {
 	sources, err := listPulseSources()
 	if err != nil || len(sources) == 0 {
-		logger.Info("[audio] source discovery failed (%v), fallback to portal option", err)
+		logger.Info("audio", "source discovery failed (%v), fallback to portal option", err)
 		return portalAudioChoice, nil
 	}
 
@@ -136,7 +136,7 @@ func chooseInteractiveLinuxDevice() (string, error) {
 	}
 	n, err := strconv.Atoi(line)
 	if err != nil || n < 1 || n > len(options) {
-		logger.Info("[audio] invalid selection %q, fallback to default", line)
+		logger.Info("audio", "invalid selection %q, fallback to default", line)
 		return options[0], nil
 	}
 	return options[n-1], nil
@@ -278,7 +278,7 @@ func (s *linuxPortalPWRecordSource) Start(ctx context.Context) error {
 	s.stdout = stdout
 	s.mu.Unlock()
 
-	logger.Info("[audio] portal node=%d via pw-record", nodeID)
+	logger.Info("audio", "portal node=%d via pw-record", nodeID)
 	go s.readLoop(runCtx)
 	go s.waitLoop()
 	return nil

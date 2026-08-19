@@ -16,8 +16,9 @@ import (
 
 // Sender handles video encoding and custom protocol transmission.
 type Sender struct {
-	cfg  config.ServerConfig
-	conn *net.UDPConn
+	cfgMu sync.RWMutex
+	cfg   config.ServerConfig
+	conn  *net.UDPConn
 
 	viewersMu sync.RWMutex
 	viewers   map[string]*viewerState
@@ -54,7 +55,7 @@ func NewSender(cfg config.ServerConfig) (*Sender, error) {
 			gridSize = int(val)
 		}
 	}
-	if gridSize == 0 {
+	if gridSize <= 0 {
 		gridSize = 10
 	}
 	tileBuffer := NewTileBuffer(gridSize, cfg.Capture.Width, cfg.Capture.Height)
@@ -110,6 +111,78 @@ func (s *Sender) StartControlPlane() {
 	go s.viewerCleanupLoop()
 }
 
+// UpdateVideoConfig dynamically reconfigures the video encoder/pipeline and broadcasts the update to all clients.
+func (s *Sender) UpdateVideoConfig(newCfg config.ServerConfig) error {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+
+	oldCodec := s.codecName
+	newCodec := newCfg.Capture.Codec
+	if newCodec == "" {
+		newCodec = "blocky"
+	}
+
+	s.cfg.Capture = newCfg.Capture
+	s.codecName = newCodec
+
+	if newCfg.Capture.FPS > 0 {
+		s.minFramePeriod = time.Second / time.Duration(newCfg.Capture.FPS)
+		s.frameDeadline = frameDeadlineForFPS(newCfg.Capture.FPS)
+	}
+
+	var gridSize int
+	if v, ok := newCfg.Capture.RGBACodecConfig["tile_size"]; ok {
+		if val, ok := v.(int); ok {
+			gridSize = val
+		} else if val, ok := v.(float64); ok {
+			gridSize = int(val)
+		}
+	}
+	if gridSize <= 0 {
+		gridSize = 10
+	}
+
+	if newCodec == "h264" {
+		if oldCodec != "h264" || s.h264Pipeline == nil {
+			if s.h264Pipeline != nil {
+				_ = s.h264Pipeline.Close()
+				s.h264Pipeline = nil
+			}
+			codecCfg := make(map[string]interface{}, len(newCfg.Capture.H264CodecConfig)+1)
+			for k, v := range newCfg.Capture.H264CodecConfig {
+				codecCfg[k] = v
+			}
+			codecCfg["fps"] = newCfg.Capture.FPS
+			pipeline, err := videoh264.NewServerPipeline(codecCfg)
+			if err != nil {
+				logger.Info("server", "warning: failed to reinit h264 pipeline: %v", err)
+			} else {
+				s.h264Pipeline = pipeline
+			}
+		}
+	} else {
+		if s.h264Pipeline != nil {
+			_ = s.h264Pipeline.Close()
+			s.h264Pipeline = nil
+		}
+		s.tileBuffer = NewTileBuffer(gridSize, newCfg.Capture.Width, newCfg.Capture.Height)
+		s.blockyPipeline = blocky.NewServerPipeline(s.tileBuffer, newCfg.Capture.RGBACodecConfig)
+	}
+
+	s.FlushAllVideoQueues()
+
+	go func() {
+		for i := 0; i < 3; i++ {
+			s.BroadcastVideoInfo()
+			time.Sleep(25 * time.Millisecond)
+		}
+	}()
+
+	logger.Info("server", "real-time video config applied: codec=%s res=%dx%d fps=%d",
+		newCodec, newCfg.Capture.Width, newCfg.Capture.Height, newCfg.Capture.FPS)
+	return nil
+}
+
 // ProcessRGBAFrame routes one captured frame through the selected codec. A
 // frame is captured/encoded once and the resulting packet batch is fanned out
 // to all active viewers by independent per-viewer send queues.
@@ -117,32 +190,44 @@ func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
 	if s.viewerCount() == 0 {
 		return
 	}
-	expectedSize := s.cfg.Capture.Width * s.cfg.Capture.Height * 4
+
+	s.cfgMu.RLock()
+	width := s.cfg.Capture.Width
+	height := s.cfg.Capture.Height
+	codecName := s.codecName
+	tileBuffer := s.tileBuffer
+	blockyPipeline := s.blockyPipeline
+	s.cfgMu.RUnlock()
+
+	expectedSize := width * height * 4
 	if len(rgbaData) != expectedSize {
-		logger.Info("[server] WARN: buffer size mismatch - got %d bytes, expected %d (%dx%dx4)", len(rgbaData), expectedSize, s.cfg.Capture.Width, s.cfg.Capture.Height)
 		return
 	}
 
-	if s.codecName == "h264" {
-		if err := s.SendH264Frame(rgbaData, s.cfg.Capture.Width, s.cfg.Capture.Height); err != nil {
-			logger.Info("[server] h264 send failed: %v", err)
+	if codecName == "h264" {
+		if err := s.SendH264Frame(rgbaData, width, height); err != nil {
+			logger.Info("server", "h264 send failed: %v", err)
 		}
 		return
 	}
 
-	changedTiles := s.tileBuffer.UpdateTiles(rgbaData)
+	if tileBuffer == nil || blockyPipeline == nil {
+		return
+	}
+
+	changedTiles := tileBuffer.UpdateTiles(rgbaData)
 	if changedTiles == nil {
 		changedTiles = []uint16{}
 	}
-	tilesToSend := s.tileBuffer.GetTilesToSend(changedTiles)
+	tilesToSend := tileBuffer.GetTilesToSend(changedTiles)
 	if len(tilesToSend) == 0 {
 		return
 	}
 
 	frameSeq := s.nextFrameSeq()
-	packets, err := s.blockyPipeline.BuildTilesBatch(frameSeq, tilesToSend, stream.NowTimestampMS())
+	packets, err := blockyPipeline.BuildTilesBatch(frameSeq, tilesToSend, stream.NowTimestampMS())
 	if err != nil {
-		logger.Info("[server] blocky packetization failed: %v", err)
+		logger.Info("server", "blocky packetization failed: %v", err)
 		return
 	}
 	s.broadcastVideoBatch(packets, frameSeq)

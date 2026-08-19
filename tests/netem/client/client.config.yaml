@@ -1,0 +1,34 @@
+# ==============================================================================
+# StreamScreen Netem Test Client Configuration
+# ==============================================================================
+
+# Target Netem Relay endpoint (relay forwards traffic on port 5000)
+server_host: "127.0.0.1"
+port: 5000
+
+# Client Window Display Options
+window:
+     title: "StreamScreen Client - netem relay 5000"
+     width: 1280
+     height: 720
+     fullscreen: false
+
+# On-Screen Performance & HUD Statistics
+stats:
+     debug: true
+     font_size: 16
+     update_interval_ms: 500
+
+# Network Resilience & Jitter Buffer Tuning
+network:
+     max_latency_ms: 200
+     nack_retry_ms: 20
+     partial_frame_ready: 0.98
+     allow_partial_frames: true
+     force_output_partial: true
+     auto_tune_by_fps: true
+
+# Audio Configuration
+audio:
+     enabled: false
+     audio_output_device: "interactive"

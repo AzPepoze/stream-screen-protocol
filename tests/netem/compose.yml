@@ -23,7 +23,7 @@ services:
                #   - "bad"                 : 150ms ± 30ms, 8.0% loss
                #   - "extreme"             : 250ms ± 50ms, 15.0% loss, 10Mbps
                #   - "custom"              : use NETEM_DELAY, NETEM_LOSS, etc. below
-               NETEM_PRESET: "${NETEM_PRESET:-mobile}"
+               NETEM_PRESET: "${NETEM_PRESET:-wifi}"
                NETEM_DELAY: "${NETEM_DELAY:-20ms}"
                NETEM_JITTER: "${NETEM_JITTER:-2ms}"
                NETEM_LOSS: "${NETEM_LOSS:-0.5%}"

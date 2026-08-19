@@ -1,0 +1,64 @@
+# ==============================================================================
+# StreamScreen Client Configuration
+# ==============================================================================
+
+# Remote server hostname or IP address
+server_host: "127.0.0.1"
+
+# Remote server UDP port
+port: 7700
+
+# Client Window Display Options
+window:
+     # Title displayed on the client window bar
+     title: "StreamScreen Client"
+
+     # Initial / fallback window dimensions (overridden by server stream resolution)
+     width: 1280
+     height: 720
+
+     # Start the client window in full screen mode (true / false)
+     fullscreen: false
+
+# On-Screen Statistics & Performance Overlay
+stats:
+     # Enable the real-time debug HUD overlay (FPS, latency, bitrate, received frames)
+     debug: true
+
+     # Font size of the debug overlay text (default: 16)
+     font_size: 16
+
+     # Interval in milliseconds to recalculate throughput, FPS, and statistics
+     update_interval_ms: 500
+
+# Network Resilience & Jitter Buffer Tuning
+network:
+     # Maximum tolerated packet delay in milliseconds before dropping or advancing frame
+     max_latency_ms: 200
+
+     # Interval in milliseconds between NACK packet retransmission requests
+     nack_retry_ms: 20
+
+     # Fraction of frame packets received (0.0 - 1.0) required to trigger partial render
+     # e.g., 0.98 = render incomplete frame if at least 98% of packets arrived
+     partial_frame_ready: 0.98
+
+     # Allow rendering incomplete frames to maintain smooth video presentation
+     allow_partial_frames: true
+
+     # Force output of partial frame if deadline expires before full frame arrives
+     force_output_partial: true
+
+     # Automatically tune jitter buffer target latency based on incoming frame rates
+     auto_tune_by_fps: true
+
+# Audio Playback Configuration
+audio:
+     # Enable audio decoding and playback
+     enabled: false
+
+     # Audio output / playback device:
+     #   - "interactive" : Show interactive terminal prompt to choose output device
+     #   - "default"     : Use the system default audio playback device
+     #   - "<device_name>" : Specific audio output device name
+     audio_output_device: "interactive"

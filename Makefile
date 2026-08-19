@@ -83,7 +83,7 @@ netem-logs:
 	$(NETEM_COMPOSE) logs -f --no-color
 
 netem-server: build-server
-	$(SERVER_BIN) -config server.config.json
+	$(SERVER_BIN) -config server.config.yaml
 
 netem-client: build-client
 	cd tests/netem/client && ../../../$(CLIENT_BIN)

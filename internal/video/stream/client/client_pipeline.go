@@ -19,7 +19,7 @@ func (r *ClientReceiver) tileFrameReconstructionLoop() {
 	ticker := time.NewTicker(frameInterval)
 	defer ticker.Stop()
 
-	logger.Info("Client: tileFrameReconstructionLoop started - compositing at %d fps", fps)
+	logger.Info("client", "tileFrameReconstructionLoop started - compositing at %d fps", fps)
 
 	for {
 		select {

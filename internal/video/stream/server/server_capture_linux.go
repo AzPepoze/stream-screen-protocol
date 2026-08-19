@@ -47,7 +47,7 @@ func (s *Sender) Start(pipewireFD int, nodeID uint32) error {
 	}
 
 	s.StartControlPlane()
-	logger.Info("[server] starting legacy linux capture pipeline")
+	logger.Info("server", "starting legacy linux capture pipeline")
 	return pipeline.SetState(gst.StatePlaying)
 }
 

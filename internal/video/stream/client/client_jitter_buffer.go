@@ -102,6 +102,20 @@ func (jb *JitterBuffer) SetCompleteFramesOnly() {
 	jb.forceOutput = false
 }
 
+func (jb *JitterBuffer) SetAllowPartial(allow bool, force bool) {
+	jb.mu.Lock()
+	defer jb.mu.Unlock()
+	jb.allowPartial = allow
+	jb.forceOutput = force
+}
+
+func (jb *JitterBuffer) Flush() {
+	jb.mu.Lock()
+	defer jb.mu.Unlock()
+	jb.frames = make(map[uint32]*FrameBuffer)
+	jb.nackedFrames = make(map[uint32]time.Time)
+}
+
 func (jb *JitterBuffer) ConfigureTiming(maxLatency, nackRetryDelay time.Duration) {
 	jb.mu.Lock()
 	defer jb.mu.Unlock()
@@ -143,7 +157,7 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 		data := jb.reassemble(fb)
 		delete(jb.frames, header.FrameSeq)
 		delete(jb.nackedFrames, header.FrameSeq)
-		logger.Info("Client: block=%d ready %.0f%% (%d/%d packets)", header.FrameSeq, received*100, len(fb.packets), fb.totalPackets)
+		logger.Info("client", "block=%d ready %.0f%% (%d/%d packets)", header.FrameSeq, received*100, len(fb.packets), fb.totalPackets)
 		return data, header.FrameSeq
 	}
 
@@ -177,7 +191,7 @@ func (jb *JitterBuffer) Push(header stream.PacketHeader, payload []byte) (readyD
 			data := jb.reassemble(frame)
 			delete(jb.frames, seq)
 			delete(jb.nackedFrames, seq)
-			logger.Info("Client: FORCE output frame=%d %.0f%% (%d/%d packets, %d missing)", seq, receivedRatio*100, len(frame.packets), frame.totalPackets, len(missing))
+			logger.Info("client", "FORCE output frame=%d %.0f%% (%d/%d packets, %d missing)", seq, receivedRatio*100, len(frame.packets), frame.totalPackets, len(missing))
 			return data, seq
 		}
 

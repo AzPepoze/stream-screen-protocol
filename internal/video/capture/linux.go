@@ -45,7 +45,7 @@ func (s *linuxSource) Start(ctx context.Context) error {
 	s.session = session
 
 	streamInfo := session.Streams[0]
-	logger.Info("capture(linux): portal stream_node=%d", streamInfo.NodeID)
+	logger.Info("capture", "portal stream_node=%d", streamInfo.NodeID)
 
 	pipelineStr := fmt.Sprintf(
 		"pipewiresrc fd=%d path=%d do-timestamp=true ! "+

@@ -14,11 +14,11 @@ func (r *ClientReceiver) joinLoop() {
 	defer ticker.Stop()
 	packet := stream.MarshalJoin("")
 
-	logger.Info("Client: joinLoop() STARTING, will send JOIN to %s every 1s", r.serverAddr.String())
+	logger.Info("client", "joinLoop() STARTING, will send JOIN to %s every 1s", r.serverAddr.String())
 	for {
 		_ = r.conn.SetWriteDeadline(time.Time{})
 		if _, err := r.conn.WriteToUDP(packet, r.serverAddr); err != nil {
-			logger.Info("Client: joinLoop() JOIN write error: %v", err)
+			logger.Info("client", "joinLoop() JOIN write error: %v", err)
 		}
 		select {
 		case <-r.ctx.Done():

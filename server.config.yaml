@@ -1,0 +1,85 @@
+# ==============================================================================
+# StreamScreen Server Configuration
+# ==============================================================================
+
+# Network binding address
+# Use "0.0.0.0" to listen on all interfaces or a specific local IP.
+bind_host: "0.0.0.0"
+
+# UDP port to listen for incoming client stream requests
+port: 7700
+
+# Screen Capture Settings
+capture:
+     # Capture backend to use:
+     #   - "auto"             : Automatically select based on OS (DXGI on Windows, Portal-Pipewire on Linux)
+     #   - "dxgi"             : Direct3D 11 Desktop Duplication API (Windows)
+     #   - "portal-pipewire"  : XDG Desktop Portal PipeWire capture (Linux Wayland/X11)
+     #   - "ddagrab"          : FFmpeg DDA grab filter (Windows)
+     #   - "gdigrab"          : GDI screen capture (Windows fallback)
+     backend: "auto"
+
+     # Target capture framerate in frames per second (FPS)
+     fps: 100
+
+     # Video capture resolution width and height
+     width: 1920
+     height: 1080
+
+     # Display source identifier ("default" selects the primary monitor)
+     source: "default"
+
+     # Cursor rendering mode:
+     #   - "embedded" : Draw mouse cursor directly onto captured video frames
+     #   - "hidden"   : Hide mouse cursor from stream
+     #   - "metadata" : Send mouse cursor position as separate packet metadata
+     cursor_mode: "embedded"
+
+     # Type of source: "monitor", "window", "virtual", or "any"
+     source_type: "monitor"
+
+     # Video encoder codec:
+     #   - "h264" : H.264 compressed video (recommended for low bandwidth)
+     #   - "rgba" : Lossless raw RGBA tiles with delta compression
+     codec: "h264"
+
+     # RGBA codec parameters (used when codec is "rgba")
+     rgba_codec_config:
+          tile_size: 20 # Size of delta compression tiles in pixels (e.g. 20x20)
+
+     # H.264 codec parameters (used when codec is "h264")
+     h264_codec_config:
+          bitrate: 8000 # Target video bitrate in kbps
+          preset: "ultrafast" # Speed preset: ultrafast, superfast, veryfast, faster, fast, medium
+          tune: "zerolatency" # Tuning option: zerolatency, film, animation
+          # Optional encoder backend: "auto", "gstreamer", "ffmpeg", "amf", "nvenc", "vaapi"
+          # h264_encoder_backend: "auto"
+
+# Interval in milliseconds between periodic server stats logging
+stats_interval_ms: 1000
+
+# Audio Streaming Configuration
+audio:
+     # Enable audio capture and streaming
+     enabled: false
+
+     # Audio compression codec (currently supported: "opus")
+     codec: "opus"
+
+     # Audio sampling rate in Hz (e.g. 48000, 44100)
+     sample_rate: 48000
+
+     # Number of audio channels (1 = Mono, 2 = Stereo)
+     channels: 2
+
+     # Duration of each audio frame packet in milliseconds (e.g. 10, 20)
+     frame_ms: 20
+
+     # Target audio bitrate in kbps
+     bitrate_kbps: 96
+
+     # Audio input / capture device:
+     #   - "interactive" : Display a menu to select available audio devices on startup
+     #   - "default"     : Use the system default audio recording device
+     #   - "<device_name>" : Specific audio device name
+     audio_input_device: "interactive"

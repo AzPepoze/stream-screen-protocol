@@ -17,7 +17,7 @@ func (r *ClientReceiver) handleTilePacket(h stream.PacketHeader, buf []byte) {
 	// Extract payload (skip header)
 	payload := buf[stream.CSPHeaderSize:]
 	if len(payload) < 2 {
-		logger.Info("[client] Tile packet too small: %d bytes", len(payload))
+		logger.Info("client", "Tile packet too small: %d bytes", len(payload))
 		return
 	}
 
@@ -30,7 +30,7 @@ func (r *ClientReceiver) handleTilePacket(h stream.PacketHeader, buf []byte) {
 			r.frameBufferMu.Unlock()
 			r.frameDirty.Store(true)
 		} else {
-			logger.Info("[client] Failed to unmarshal tile: %v", err)
+			logger.Info("client", "Failed to unmarshal tile: %v", err)
 		}
 		return
 	}
@@ -71,7 +71,7 @@ func (r *ClientReceiver) handleTilePacket(h stream.PacketHeader, buf []byte) {
 				r.frameBufferMu.Unlock()
 				r.frameDirty.Store(true)
 			} else {
-				logger.Info("[client] Failed to unmarshal reassembled tile: %v", err)
+				logger.Info("client", "Failed to unmarshal reassembled tile: %v", err)
 			}
 		}
 	} else {
@@ -113,7 +113,7 @@ func (r *ClientReceiver) reassembleTile(fb *TileFragmentBuffer) []byte {
 // tileRequestLoop monitors tile freshness and requests stale tiles from server
 func (r *ClientReceiver) tileRequestLoop() {
 	if r.tileGrid == nil {
-		logger.Info("Client: tileRequestLoop() starting before TileGrid initialized, returning")
+		logger.Info("client", "tileRequestLoop() starting before TileGrid initialized, returning")
 		return
 	}
 
@@ -122,7 +122,7 @@ func (r *ClientReceiver) tileRequestLoop() {
 
 	initialCheckDone := false
 
-	logger.Info("Client: tileRequestLoop() started - will monitor tile freshness every 3s")
+	logger.Info("client", "tileRequestLoop() started - will monitor tile freshness every 3s")
 
 	for {
 		select {
@@ -137,7 +137,7 @@ func (r *ClientReceiver) tileRequestLoop() {
 
 			if staleFraction >= 0.9 {
 				// Request full refresh when 90%+ tiles are missing
-				logger.Info("Client: %d/%d tiles stale (%.1f%%) - requesting full refresh", tileCount-recvCount, tileCount, staleFraction*100)
+				logger.Info("client", "%d/%d tiles stale (%.1f%%) - requesting full refresh", tileCount-recvCount, tileCount, staleFraction*100)
 				allTiles := make([]uint16, tileCount)
 				for i := 0; i < tileCount; i++ {
 					allTiles[i] = uint16(i)
@@ -145,12 +145,12 @@ func (r *ClientReceiver) tileRequestLoop() {
 				r.tileGrid.MarkRequested(allTiles)
 				reqPacket := stream.MarshalTileRequest(allTiles)
 				if _, err := r.conn.WriteToUDP(reqPacket, r.serverAddr); err != nil {
-					logger.Info("Client: failed to send full tile request: %v", err)
+					logger.Info("client", "failed to send full tile request: %v", err)
 				}
 				initialCheckDone = true
 			} else if !initialCheckDone && recvCount == tileCount {
 				// All tiles received - switch to targeted recovery
-				logger.Info("Client: initial full frame received, switching to targeted tile recovery")
+				logger.Info("client", "initial full frame received, switching to targeted tile recovery")
 				initialCheckDone = true
 			} else if initialCheckDone && staleFraction < 0.9 {
 				// Normal operation: request tiles stale for >5 seconds
@@ -161,12 +161,12 @@ func (r *ClientReceiver) tileRequestLoop() {
 						staleTiles = staleTiles[:20]
 					}
 
-					logger.Info("Client: requesting %d stale tiles (age > 5s)", len(staleTiles))
+					logger.Info("client", "requesting %d stale tiles (age > 5s)", len(staleTiles))
 
 					r.tileGrid.MarkRequested(staleTiles)
 					reqPacket := stream.MarshalTileRequest(staleTiles)
 					if _, err := r.conn.WriteToUDP(reqPacket, r.serverAddr); err != nil {
-						logger.Info("Client: failed to send tile request: %v", err)
+						logger.Info("client", "failed to send tile request: %v", err)
 					}
 				}
 			}

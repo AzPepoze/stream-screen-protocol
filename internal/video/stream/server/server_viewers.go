@@ -159,6 +159,48 @@ func (s *Sender) stopAllViewers() {
 	s.viewersMu.Unlock()
 }
 
+func (v *viewerState) flushVideo() {
+	for {
+		select {
+		case <-v.videoQ:
+		default:
+			return
+		}
+	}
+}
+
+func (s *Sender) BroadcastVideoInfo() {
+	s.cfgMu.RLock()
+	width := uint32(s.cfg.Capture.Width)
+	height := uint32(s.cfg.Capture.Height)
+	fps := uint32(s.cfg.Capture.FPS)
+	gridSize := uint32(10)
+	if v, ok := s.cfg.Capture.RGBACodecConfig["tile_size"]; ok {
+		if val, ok := v.(int); ok {
+			gridSize = uint32(val)
+		} else if val, ok := v.(float64); ok {
+			gridSize = uint32(val)
+		}
+	}
+	codecName := s.codecName
+	s.cfgMu.RUnlock()
+
+	packet := stream.MarshalVideoInfo(width, height, fps, gridSize, codecName)
+	for _, viewer := range s.activeViewers() {
+		if viewer != nil && viewer.addr != nil {
+			_, _ = s.conn.WriteToUDP(packet, viewer.addr)
+		}
+	}
+}
+
+func (s *Sender) FlushAllVideoQueues() {
+	for _, viewer := range s.activeViewers() {
+		if viewer != nil {
+			viewer.flushVideo()
+		}
+	}
+}
+
 func (s *Sender) viewerCleanupLoop() {
 	interval := time.Second
 	if s.clientTimeout > 0 && s.clientTimeout/2 < interval {

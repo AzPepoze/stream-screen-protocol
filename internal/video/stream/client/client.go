@@ -46,9 +46,10 @@ type ClientReceiver struct {
 	h264ErrMu     sync.Mutex
 	h264ErrCount  uint64
 	h264ErrLogAt  time.Time
-	frameDirty    atomic.Bool
-	autoTuneByFPS bool
-	audioInfoMu   sync.RWMutex
+	canvasRefreshFlag uint32
+	frameDirty        atomic.Bool
+	autoTuneByFPS     bool
+	audioInfoMu       sync.RWMutex
 	audioCodec    string
 	audioRate     uint32
 	audioChannels uint32
@@ -138,14 +139,14 @@ func (r *ClientReceiver) Start() error {
 	go r.joinLoop()
 	go r.controlLoop()
 
-	logger.Info("Client: Start() waiting for server VideoInfo (timeout=30s)")
+	logger.Info("client", "Start() waiting for server VideoInfo (timeout=30s)")
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		r.videoInfoMu.RLock()
 		if r.videoWidth > 0 && r.videoHeight > 0 && r.videoFPS > 0 {
 			width, height, fps := r.videoWidth, r.videoHeight, r.videoFPS
 			r.videoInfoMu.RUnlock()
-			logger.Info("Client: Start() GOT server video info: %dx%d @ %d fps", width, height, fps)
+			logger.Info("client", "Start() GOT server video info: %dx%d @ %d fps", width, height, fps)
 
 			r.applyJitterTimingFromFPS(int(fps))
 
@@ -160,11 +161,11 @@ func (r *ClientReceiver) Start() error {
 			r.frameBufferMu.Unlock()
 
 			r.tileGrid = NewTileGrid(r.tileGridSize, int(width), int(height))
-			logger.Info("Client: initialized TileGrid %dx%d with %d tiles", r.tileGridSize, r.tileGridSize, r.tileGridSize*r.tileGridSize)
-			logger.Info("Client: initialized frame buffer: %d bytes", pixelSize)
+			logger.Info("client", "initialized TileGrid %dx%d with %d tiles", r.tileGridSize, r.tileGridSize, r.tileGridSize*r.tileGridSize)
+			logger.Info("client", "initialized frame buffer: %d bytes", pixelSize)
 
 			if r.currentCodecName() == "h264" {
-				logger.Info("Client: codec=h264, enabling H264 decode/render path")
+				logger.Info("client", "codec=h264, enabling H264 decode/render path")
 				if err := r.ensureH264Pipeline(); err != nil {
 					return err
 				}
@@ -209,7 +210,7 @@ func (r *ClientReceiver) applyJitterTimingFromFPS(fps int) {
 		time.Duration(r.cfg.Network.NackRetryMS)*time.Millisecond,
 	)
 	r.jitterBuffer.ConfigureTiming(maxLatency, nackRetry)
-	logger.Info("Client: auto network timing fps=%d max_latency=%s nack_retry=%s", fps, maxLatency, nackRetry)
+	logger.Info("client", "auto network timing fps=%d max_latency=%s nack_retry=%s", fps, maxLatency, nackRetry)
 }
 
 func autoJitterTiming(fps int, configuredMaxLatency, configuredNACK time.Duration) (time.Duration, time.Duration) {
@@ -275,6 +276,35 @@ func (r *ClientReceiver) currentCodecName() string {
 	r.videoInfoMu.RLock()
 	defer r.videoInfoMu.RUnlock()
 	return r.codecName
+}
+
+func (r *ClientReceiver) ConsumeCanvasRefresh() bool {
+	return atomic.CompareAndSwapUint32(&r.canvasRefreshFlag, 1, 0)
+}
+
+func (r *ClientReceiver) flushFrames() {
+	for {
+		select {
+		case <-r.frameChan:
+		default:
+			return
+		}
+	}
+}
+
+func (r *ClientReceiver) GetCodecName() string {
+	return r.currentCodecName()
+}
+
+func (r *ClientReceiver) UpdateNetworkConfig(cfg config.ClientConfig) {
+	r.cfg.Network = cfg.Network
+	r.jitterBuffer.ConfigureTiming(
+		time.Duration(cfg.Network.MaxLatencyMS)*time.Millisecond,
+		time.Duration(cfg.Network.NackRetryMS)*time.Millisecond,
+	)
+	if r.currentCodecName() != "h264" {
+		r.jitterBuffer.SetAllowPartial(cfg.Network.AllowPartial, cfg.Network.ForceOutput)
+	}
 }
 
 func (r *ClientReceiver) startAudioPipeline() error {

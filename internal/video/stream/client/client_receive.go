@@ -76,15 +76,66 @@ func (r *ClientReceiver) pushVideoPacket(h stream.PacketHeader, payload []byte) 
 
 func (r *ClientReceiver) handleVideoInfo(buf []byte, n int) {
 	w, ht, fps, gridSize, codecName, err := stream.UnmarshalVideoInfo(buf[:n])
-	if err == nil {
-		logger.Info("Client: VideoInfo - %dx%d @ %d fps, gridSize=%d, codec=%s", w, ht, fps, gridSize, codecName)
-		r.videoInfoMu.Lock()
-		r.videoWidth = w
-		r.videoHeight = ht
-		r.videoFPS = fps
-		r.tileGridSize = int(gridSize)
-		r.codecName = codecName
-		r.videoInfoMu.Unlock()
+	if err != nil {
+		return
+	}
+	if codecName == "" {
+		codecName = "rgba"
+	}
+
+	r.videoInfoMu.Lock()
+	changed := (r.videoWidth != w || r.videoHeight != ht || r.videoFPS != fps || r.tileGridSize != int(gridSize) || r.codecName != codecName)
+	oldCodec := r.codecName
+	wasInitialized := r.videoWidth > 0 && r.videoHeight > 0
+
+	r.videoWidth = w
+	r.videoHeight = ht
+	r.videoFPS = fps
+	r.tileGridSize = int(gridSize)
+	r.codecName = codecName
+	r.videoInfoMu.Unlock()
+
+	if changed && wasInitialized {
+		logger.Info("client", "VideoInfo updated - %dx%d @ %d fps, gridSize=%d, codec=%s (was %s)",
+			w, ht, fps, gridSize, codecName, oldCodec)
+
+		r.applyJitterTimingFromFPS(int(fps))
+
+		pixelSize := int(w * ht * 4)
+		r.pixelsMu.Lock()
+		if len(r.pixels) != pixelSize {
+			r.pixels = make([]byte, pixelSize)
+			r.prevPixels = make([]byte, pixelSize)
+		} else {
+			for i := range r.pixels {
+				r.pixels[i] = 0
+			}
+			for i := range r.prevPixels {
+				r.prevPixels[i] = 0
+			}
+		}
+		r.pixelsMu.Unlock()
+
+		r.frameBufferMu.Lock()
+		r.frameBuffer = make([]byte, pixelSize)
+		r.frameBufferMu.Unlock()
+
+		r.tileGrid = NewTileGrid(int(gridSize), int(w), int(ht))
+
+		if codecName == "h264" {
+			if oldCodec != "h264" || r.h264Pipeline == nil {
+				_ = r.CloseH264Pipeline()
+				_ = r.ensureH264Pipeline()
+			}
+			r.jitterBuffer.SetCompleteFramesOnly()
+		} else {
+			_ = r.CloseH264Pipeline()
+			r.jitterBuffer.SetAllowPartial(r.cfg.Network.AllowPartial, r.cfg.Network.ForceOutput)
+		}
+
+		r.jitterBuffer.Flush()
+		r.flushFrames()
+		atomic.StoreUint32(&r.canvasRefreshFlag, 1)
 	}
 }
 
@@ -92,7 +143,7 @@ func (r *ClientReceiver) handleAudioInfo(buf []byte, n int) {
 	sampleRate, channels, frameMS, bitrate, codecName, err := stream.UnmarshalAudioInfo(buf[:n])
 	if err == nil {
 		r.setAudioInfo(sampleRate, channels, frameMS, bitrate, codecName)
-		logger.Info("Client: AudioInfo - codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
+		logger.Info("audio", "AudioInfo - codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
 			codecName, sampleRate, channels, frameMS, bitrate)
 	}
 }

@@ -33,7 +33,7 @@ func (s *Sender) listenForNACKs() {
 				target := s.resolveJoinEndpoint(addr, buf[:n])
 				s.registerViewer(target)
 				s.sendSessionInfo(target)
-				logger.Info("[server] viewer joined %s active=%d", target.String(), s.viewerCount())
+				logger.Info("server", "viewer joined %s active=%d", target.String(), s.viewerCount())
 
 			case stream.CSPPacketTypeNACK:
 				s.touchViewer(addr)
@@ -68,7 +68,7 @@ func (s *Sender) listenForNACKs() {
 			case stream.CSPPacketTypeControl:
 				feedback, err := stream.UnmarshalExtendedControlFeedback(buf[:n])
 				if err != nil {
-					logger.Info("[server] invalid control feedback from %s: %v", addr.String(), err)
+					logger.Info("server", "invalid control feedback from %s: %v", addr.String(), err)
 					continue
 				}
 				s.applyControlFeedback(addr, feedback)
@@ -103,6 +103,7 @@ func (s *Sender) sendSessionInfo(addr *net.UDPAddr) {
 	if addr == nil {
 		return
 	}
+	s.cfgMu.RLock()
 	gridSize := 10
 	if v, ok := s.cfg.Capture.RGBACodecConfig["tile_size"]; ok {
 		if val, ok := v.(int); ok {
@@ -118,15 +119,23 @@ func (s *Sender) sendSessionInfo(addr *net.UDPAddr) {
 		uint32(gridSize),
 		s.codecName,
 	)
+	audioEnabled := s.cfg.Audio.Enabled
+	audioSampleRate := uint32(s.cfg.Audio.SampleRate)
+	audioChannels := uint32(s.cfg.Audio.Channels)
+	audioFrameMS := uint32(s.cfg.Audio.FrameMS)
+	audioBitrateKbps := uint32(s.cfg.Audio.BitrateKbps)
+	audioCodec := s.cfg.Audio.Codec
+	s.cfgMu.RUnlock()
+
 	_, _ = s.conn.WriteToUDP(videoInfo, addr)
 
-	if s.cfg.Audio.Enabled {
+	if audioEnabled {
 		audioInfo := stream.MarshalAudioInfo(
-			uint32(s.cfg.Audio.SampleRate),
-			uint32(s.cfg.Audio.Channels),
-			uint32(s.cfg.Audio.FrameMS),
-			uint32(s.cfg.Audio.BitrateKbps),
-			s.cfg.Audio.Codec,
+			audioSampleRate,
+			audioChannels,
+			audioFrameMS,
+			audioBitrateKbps,
+			audioCodec,
 		)
 		_, _ = s.conn.WriteToUDP(audioInfo, addr)
 	}

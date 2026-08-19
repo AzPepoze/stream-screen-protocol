@@ -65,7 +65,9 @@ func (r *ClientReceiver) ensureH264Pipeline() error {
 // CloseH264Pipeline stops the H264 pipeline
 func (r *ClientReceiver) CloseH264Pipeline() error {
 	if r.h264Pipeline != nil {
-		return r.h264Pipeline.Close()
+		err := r.h264Pipeline.Close()
+		r.h264Pipeline = nil
+		return err
 	}
 	return nil
 }

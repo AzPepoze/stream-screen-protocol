@@ -84,7 +84,7 @@ func (p *ServerPipeline) SendTilesBurstWithPacing(frameSeq uint32, tileIDs []uin
 
 			_, err := conn.WriteToUDP(packet, destAddr)
 			if err != nil {
-				logger.Info("[rgba-server] tile write error frame=%d tile=%d dest=%s err=%v",
+				logger.Info("rgba-server", "tile write error frame=%d tile=%d dest=%s err=%v",
 					frameSeq, tileID, destAddr.String(), err)
 				return err
 			}

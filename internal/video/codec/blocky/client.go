@@ -43,7 +43,7 @@ func (p *ClientPipeline) HandleTilePacket(h stream.PacketHeader, buf []byte, set
 	// Extract payload (skip header)
 	payload := buf[stream.CSPHeaderSize:]
 	if len(payload) < 2 {
-		logger.Info("[blocky-client] Tile packet too small: %d bytes", len(payload))
+		logger.Info("blocky-client", "Tile packet too small: %d bytes", len(payload))
 		return fmt.Errorf("tile packet too small")
 	}
 
@@ -54,7 +54,7 @@ func (p *ClientPipeline) HandleTilePacket(h stream.PacketHeader, buf []byte, set
 		if err == nil {
 			setTileFunc(tileID, pixels)
 		} else {
-			logger.Info("[blocky-client] Failed to unmarshal tile: %v", err)
+			logger.Info("blocky-client", "Failed to unmarshal tile: %v", err)
 			return err
 		}
 		return nil
@@ -92,11 +92,11 @@ func (p *ClientPipeline) HandleTilePacket(h stream.PacketHeader, buf []byte, set
 				setTileFunc(tileID, pixels)
 				return nil
 			} else {
-				logger.Info("[blocky-client] FAILED: unmarshal reassembled tile: %v", err)
+				logger.Info("blocky-client", "FAILED: unmarshal reassembled tile: %v", err)
 				return err
 			}
 		} else {
-			logger.Info("[blocky-client] FAILED: reassemble returned nil")
+			logger.Info("blocky-client", "FAILED: reassemble returned nil")
 			return fmt.Errorf("reassemble returned nil")
 		}
 	}

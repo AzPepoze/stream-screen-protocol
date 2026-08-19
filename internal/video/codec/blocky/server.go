@@ -86,7 +86,7 @@ func (p *ServerPipeline) SendTilesBurstWithPacing(frameSeq uint32, tileIDs []uin
 	}
 	for _, packet := range packets {
 		if _, err := conn.WriteToUDP(packet, destAddr); err != nil {
-			logger.Info("[blocky-server] write error frame=%d dest=%s err=%v", frameSeq, destAddr.String(), err)
+			logger.Info("blocky-server", "write error frame=%d dest=%s err=%v", frameSeq, destAddr.String(), err)
 			return fmt.Errorf("blocky write: %w", err)
 		}
 		if packetGap > 0 {

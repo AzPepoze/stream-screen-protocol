@@ -37,7 +37,7 @@ func (s *Sender) StartAudio() error {
 		return err
 	}
 
-	logger.Info("[server] audio pipeline started codec=%s sample_rate=%d channels=%d frame_ms=%d", s.cfg.Audio.Codec, s.cfg.Audio.SampleRate, s.cfg.Audio.Channels, s.cfg.Audio.FrameMS)
+	logger.Info("audio", "audio pipeline started codec=%s sample_rate=%d channels=%d frame_ms=%d", s.cfg.Audio.Codec, s.cfg.Audio.SampleRate, s.cfg.Audio.Channels, s.cfg.Audio.FrameMS)
 
 	go func() {
 		defer func() {

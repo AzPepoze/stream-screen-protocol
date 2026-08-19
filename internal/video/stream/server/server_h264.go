@@ -9,10 +9,13 @@ import (
 )
 
 func (s *Sender) EnsureH264Pipeline() error {
+	s.cfgMu.RLock()
 	if s.codecName != "h264" {
+		s.cfgMu.RUnlock()
 		return nil
 	}
 	if s.h264Pipeline != nil {
+		s.cfgMu.RUnlock()
 		return nil
 	}
 	codecCfg := make(map[string]interface{}, len(s.cfg.Capture.H264CodecConfig)+1)
@@ -20,6 +23,8 @@ func (s *Sender) EnsureH264Pipeline() error {
 		codecCfg[k] = v
 	}
 	codecCfg["fps"] = s.cfg.Capture.FPS
+	s.cfgMu.RUnlock()
+
 	pipeline, err := videoh264.NewServerPipeline(codecCfg)
 	if err != nil {
 		return fmt.Errorf("failed to initialize h264 pipeline: %w", err)

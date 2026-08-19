@@ -24,7 +24,7 @@ Open three terminals from the repository root.
 make netem-server
 ```
 
-The normal `server.config.json` binds the server to `0.0.0.0:7700` so the Docker container reaches it through `host.docker.internal`.
+The normal `server.config.yaml` binds the server to `0.0.0.0:7700` so the Docker container reaches it through `host.docker.internal`.
 
 ### 2. Start the Docker relay
 
@@ -46,7 +46,7 @@ NETEM_PRESET=mobile make netem-up
 make netem-client
 ```
 
-This runs the client binary from `tests/netem/client`, whose `client.config.json` points at `127.0.0.1:5000`.
+This runs the client binary from `tests/netem/client`, whose `client.config.yaml` points at `127.0.0.1:5000`.
 
 ## Built-in Presets
 

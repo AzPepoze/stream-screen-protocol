@@ -1,18 +1,20 @@
 package main
 
 import (
+	"flag"
 	"log"
-	"streamscreen/internal/logger"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"streamscreen/internal/config"
+	"streamscreen/internal/logger"
+	"streamscreen/internal/video/stream/client"
+
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
-
-	"streamscreen/internal/config"
-	"streamscreen/internal/video/stream/client"
 )
 
 type streamState string
@@ -35,6 +37,9 @@ type sharedFrame struct {
 }
 
 type game struct {
+	cfgPath            string
+	lastCfgModTime     time.Time
+	lastCfgCheck       time.Time
 	cfg                config.ClientConfig
 	frame              *sharedFrame
 	img                *ebiten.Image
@@ -60,22 +65,31 @@ type game struct {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	cfg, err := config.LoadClient("client.config.json")
-	if err != nil {
-		logger.Error("load client config: %v", err)
-	}
-	logger.Info("loaded client.config.json")
+	var cfgPath string
+	flag.StringVar(&cfgPath, "config", "client.config.yaml", "path to config file")
+	flag.Parse()
 
-	logger.Info("starting internal custom protocol receiver")
+	cfg, err := config.LoadClient(cfgPath)
+	if err != nil {
+		logger.Error("client", "load client config %s: %v", cfgPath, err)
+	}
+	logger.Info("client", "loaded %s", cfgPath)
+
+	var lastCfgModTime time.Time
+	if fi, err := os.Stat(cfgPath); err == nil {
+		lastCfgModTime = fi.ModTime()
+	}
+
+	logger.Info("client", "starting internal custom protocol receiver")
 	receiver, err := client.NewClientReceiver(cfg)
 	if err != nil {
-		logger.Error("create client receiver: %v", err)
+		logger.Error("client", "create client receiver: %v", err)
 	}
-	logger.Info("calling receiver.Start() - will block until server VideoInfo received")
+	logger.Info("client", "calling receiver.Start() - will block until server VideoInfo received")
 	if err := receiver.Start(); err != nil {
-		logger.Error("start client receiver: %v", err)
+		logger.Error("client", "start client receiver: %v", err)
 	}
-	logger.Info("receiver.Start() RETURNED successfully")
+	logger.Info("client", "receiver.Start() RETURNED successfully")
 
 	frame := &sharedFrame{
 		state: stateStreaming,
@@ -83,16 +97,16 @@ func main() {
 
 	// Use server-provided resolution, not config defaults
 	w, h := receiver.GetVideoResolution()
-	logger.Info("receiver.GetVideoResolution() returned: %d x %d", w, h)
+	logger.Info("client", "receiver.GetVideoResolution() returned: %d x %d", w, h)
 	windowWidth := int(w)
 	windowHeight := int(h)
 	if windowWidth <= 0 || windowHeight <= 0 {
 		// Fallback to config if for some reason server info unavailable
 		windowWidth = cfg.Window.Width
 		windowHeight = cfg.Window.Height
-		logger.Info("Resolution was <= 0, using config fallback: %d x %d", windowWidth, windowHeight)
+		logger.Info("client", "Resolution was <= 0, using config fallback: %d x %d", windowWidth, windowHeight)
 	} else {
-		logger.Info("Using server resolution: %d x %d", windowWidth, windowHeight)
+		logger.Info("client", "Using server resolution: %d x %d", windowWidth, windowHeight)
 	}
 
 	ebiten.SetWindowTitle(cfg.Window.Title)
@@ -108,21 +122,24 @@ func main() {
 	ebiten.SetTPS(videoFPS)
 
 	g := &game{
-		cfg:           cfg,
-		frame:         frame,
-		receiver:      receiver,
-		img:           ebiten.NewImage(windowWidth, windowHeight),
-		lastStatsAt:   time.Now(),
-		lastImgWidth:  windowWidth,
-		lastImgHeight: windowHeight,
-		targetTPS:     videoFPS,
+		cfgPath:        cfgPath,
+		lastCfgModTime: lastCfgModTime,
+		lastCfgCheck:   time.Now(),
+		cfg:            cfg,
+		frame:          frame,
+		receiver:       receiver,
+		img:            ebiten.NewImage(windowWidth, windowHeight),
+		lastStatsAt:    time.Now(),
+		lastImgWidth:   windowWidth,
+		lastImgHeight:  windowHeight,
+		targetTPS:      videoFPS,
 	}
-	logger.Info("[canvas] Created initial canvas: %dx%d", windowWidth, windowHeight)
+	logger.Info("canvas", "Created initial canvas: %dx%d", windowWidth, windowHeight)
 
 	err = ebiten.RunGame(g)
 	_ = receiver.Stop()
 	if err != nil {
-		logger.Error("%v", err)
+		logger.Error("client", "%v", err)
 	}
 }
 
@@ -132,6 +149,20 @@ func (g *game) Update() error {
 		return ebiten.Termination
 	}
 
+	// Check config updates periodically (every 500ms)
+	now := time.Now()
+	if now.Sub(g.lastCfgCheck) >= 500*time.Millisecond {
+		g.lastCfgCheck = now
+		if fi, err := os.Stat(g.cfgPath); err == nil && fi.ModTime().After(g.lastCfgModTime) {
+			g.lastCfgModTime = fi.ModTime()
+			if newCfg, err := config.LoadClient(g.cfgPath); err == nil {
+				logger.Info("config", "client reloaded %s", g.cfgPath)
+				g.cfg = newCfg
+				g.receiver.UpdateNetworkConfig(newCfg)
+			}
+		}
+	}
+
 	// Ensure window size is correct (force it every frame to override WM constraints)
 	w, h := g.receiver.GetVideoResolution()
 	fps := int(g.receiver.GetVideoFPS())
@@ -139,13 +170,13 @@ func (g *game) Update() error {
 	targetW, targetH := int(w), int(h)
 
 	if g.renderFrames == 1 || g.renderFrames%60 == 0 {
-		logger.Info("[UPDATE] Frame=%d: Actual=%dx%d, Target=%dx%d, LastImg=%dx%d",
+		logger.Info("client", "[UPDATE] Frame=%d: Actual=%dx%d, Target=%dx%d, LastImg=%dx%d",
 			g.renderFrames, actualW, actualH, targetW, targetH, g.lastImgWidth, g.lastImgHeight)
 	}
 
 	// If receiver has resolution but window is wrong size, fix it
 	if targetW > 0 && targetH > 0 && (actualW != targetW || actualH != targetH) {
-		logger.Info("[UPDATE] Window size mismatch! Setting to %dx%d (was %dx%d)", targetW, targetH, actualW, actualH)
+		logger.Info("client", "[UPDATE] Window size mismatch! Setting to %dx%d (was %dx%d)", targetW, targetH, actualW, actualH)
 		ebiten.SetWindowSize(targetW, targetH)
 	}
 	if fps > 0 && fps != g.targetTPS {
@@ -157,6 +188,15 @@ func (g *game) Update() error {
 }
 
 func (g *game) Draw(screen *ebiten.Image) {
+	// Handle mode switch canvas refresh signal
+	if g.receiver.ConsumeCanvasRefresh() {
+		if g.img != nil {
+			g.img.Clear()
+		}
+		g.lastSeq = 0
+		logger.Info("canvas", "Mode/resolution switch: refreshed draw canvas")
+	}
+
 	pixels, seq := g.receiver.Pixels()
 
 	// Get current server resolution from receiver
@@ -169,7 +209,7 @@ func (g *game) Draw(screen *ebiten.Image) {
 		g.lastImgHeight = int(h)
 		// Also resize the window to match
 		ebiten.SetWindowSize(int(w), int(h))
-		logger.Info("[canvas] Updated canvas size to %dx%d", w, h)
+		logger.Info("canvas", "Updated canvas size to %dx%d", w, h)
 	}
 
 	if seq != g.lastSeq && len(pixels) > 0 {
@@ -188,7 +228,7 @@ func (g *game) Draw(screen *ebiten.Image) {
 			g.frame.lastFrameAt = time.Now()
 			g.frame.mu.Unlock()
 		} else if len(pixels) != expectedSize {
-			logger.Info("[draw] Pixel size mismatch: got %d bytes, expected %d (%dx%d*4)", len(pixels), expectedSize, g.lastImgWidth, g.lastImgHeight)
+			logger.Info("draw", "Pixel size mismatch: got %d bytes, expected %d (%dx%d*4)", len(pixels), expectedSize, g.lastImgWidth, g.lastImgHeight)
 		}
 	}
 

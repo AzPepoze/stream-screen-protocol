@@ -1,11 +1,12 @@
 package config
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"runtime"
+
+	"gopkg.in/yaml.v3"
 
 	"streamscreen/internal/constants"
 )
@@ -21,76 +22,76 @@ const (
 )
 
 type ServerConfig struct {
-	BindHost string `json:"bind_host"`
-	Port     int    `json:"port"`
-	Capture    struct {
-		Backend         CaptureBackend         `json:"backend"`
-		FPS             int                    `json:"fps"`
-		Width           int                    `json:"width"`
-		Height          int                    `json:"height"`
-		Source          string                 `json:"source"`
-		CursorMode      string                 `json:"cursor_mode"`
-		SourceType      string                 `json:"source_type"`
-		Codec           string                 `json:"codec"`
-		RGBACodecConfig map[string]interface{} `json:"rgba_codec_config"`
-		H264CodecConfig map[string]interface{} `json:"h264_codec_config"`
-	} `json:"capture"`
-	StatsIntervalMS int `json:"stats_interval_ms"`
+	BindHost string `json:"bind_host" yaml:"bind_host"`
+	Port     int    `json:"port" yaml:"port"`
+	Capture  struct {
+		Backend         CaptureBackend         `json:"backend" yaml:"backend"`
+		FPS             int                    `json:"fps" yaml:"fps"`
+		Width           int                    `json:"width" yaml:"width"`
+		Height          int                    `json:"height" yaml:"height"`
+		Source          string                 `json:"source" yaml:"source"`
+		CursorMode      string                 `json:"cursor_mode" yaml:"cursor_mode"`
+		SourceType      string                 `json:"source_type" yaml:"source_type"`
+		Codec           string                 `json:"codec" yaml:"codec"`
+		RGBACodecConfig map[string]interface{} `json:"rgba_codec_config" yaml:"rgba_codec_config"`
+		H264CodecConfig map[string]interface{} `json:"h264_codec_config" yaml:"h264_codec_config"`
+	} `json:"capture" yaml:"capture"`
+	StatsIntervalMS int `json:"stats_interval_ms" yaml:"stats_interval_ms"`
 	Audio           struct {
-		Enabled     bool   `json:"enabled"`
-		Codec       string `json:"codec"`
-		SampleRate  int    `json:"sample_rate"`
-		Channels    int    `json:"channels"`
-		FrameMS     int    `json:"frame_ms"`
-		BitrateKbps int    `json:"bitrate_kbps"`
-		InputDevice string `json:"audio_input_device"`
-	} `json:"audio"`
+		Enabled     bool   `json:"enabled" yaml:"enabled"`
+		Codec       string `json:"codec" yaml:"codec"`
+		SampleRate  int    `json:"sample_rate" yaml:"sample_rate"`
+		Channels    int    `json:"channels" yaml:"channels"`
+		FrameMS     int    `json:"frame_ms" yaml:"frame_ms"`
+		BitrateKbps int    `json:"bitrate_kbps" yaml:"bitrate_kbps"`
+		InputDevice string `json:"audio_input_device" yaml:"audio_input_device"`
+	} `json:"audio" yaml:"audio"`
 }
 
 type ClientConfig struct {
-	ServerHost  string                 `json:"server_host"`
-	Port        int                    `json:"port"`
-	FPS         int                    `json:"fps"`
-	CodecConfig map[string]interface{} `json:"codec_config"`
+	ServerHost  string                 `json:"server_host" yaml:"server_host"`
+	Port        int                    `json:"port" yaml:"port"`
+	FPS         int                    `json:"fps" yaml:"fps"`
+	CodecConfig map[string]interface{} `json:"codec_config" yaml:"codec_config"`
 	Window      struct {
-		Title      string `json:"title"`
-		Width      int    `json:"width"`
-		Height     int    `json:"height"`
-		Fullscreen bool   `json:"fullscreen"`
-	} `json:"window"`
+		Title      string `json:"title" yaml:"title"`
+		Width      int    `json:"width" yaml:"width"`
+		Height     int    `json:"height" yaml:"height"`
+		Fullscreen bool   `json:"fullscreen" yaml:"fullscreen"`
+	} `json:"window" yaml:"window"`
 	Stats struct {
-		Debug            bool `json:"debug"`
-		FontSize         int  `json:"font_size"`
-		UpdateIntervalMS int  `json:"update_interval_ms"`
-	} `json:"stats"`
+		Debug            bool `json:"debug" yaml:"debug"`
+		FontSize         int  `json:"font_size" yaml:"font_size"`
+		UpdateIntervalMS int  `json:"update_interval_ms" yaml:"update_interval_ms"`
+	} `json:"stats" yaml:"stats"`
 	Network struct {
-		MaxLatencyMS      int     `json:"max_latency_ms"`
-		NackRetryMS       int     `json:"nack_retry_ms"`
-		PartialFrameReady float64 `json:"partial_frame_ready"`
-		AllowPartial      bool    `json:"allow_partial_frames"`
-		ForceOutput       bool    `json:"force_output_partial"`
-		AutoTuneByFPS     bool    `json:"auto_tune_by_fps"`
-	} `json:"network"`
+		MaxLatencyMS      int     `json:"max_latency_ms" yaml:"max_latency_ms"`
+		NackRetryMS       int     `json:"nack_retry_ms" yaml:"nack_retry_ms"`
+		PartialFrameReady float64 `json:"partial_frame_ready" yaml:"partial_frame_ready"`
+		AllowPartial      bool    `json:"allow_partial_frames" yaml:"allow_partial_frames"`
+		ForceOutput       bool    `json:"force_output_partial" yaml:"force_output_partial"`
+		AutoTuneByFPS     bool    `json:"auto_tune_by_fps" yaml:"auto_tune_by_fps"`
+	} `json:"network" yaml:"network"`
 	Audio struct {
-		Enabled      bool   `json:"enabled"`
-		OutputDevice string `json:"audio_output_device"`
-	} `json:"audio"`
+		Enabled      bool   `json:"enabled" yaml:"enabled"`
+		OutputDevice string `json:"audio_output_device" yaml:"audio_output_device"`
+	} `json:"audio" yaml:"audio"`
 }
 
 func LoadServer(path string) (ServerConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ServerConfig{}, err
+		return ServerConfig{}, fmt.Errorf("read server config %s: %w", path, err)
 	}
 
 	var cfg ServerConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return ServerConfig{}, err
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return ServerConfig{}, fmt.Errorf("parse server config %s: %w", path, err)
 	}
 
 	var compat serverConfigCompat
-	if err := json.Unmarshal(data, &compat); err != nil {
-		return ServerConfig{}, err
+	if err := yaml.Unmarshal(data, &compat); err != nil {
+		return ServerConfig{}, fmt.Errorf("parse server config compat %s: %w", path, err)
 	}
 	applyServerCompat(&cfg, compat)
 
@@ -100,17 +101,17 @@ func LoadServer(path string) (ServerConfig, error) {
 func LoadClient(path string) (ClientConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ClientConfig{}, err
+		return ClientConfig{}, fmt.Errorf("read client config %s: %w", path, err)
 	}
 
 	var cfg ClientConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return ClientConfig{}, err
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return ClientConfig{}, fmt.Errorf("parse client config %s: %w", path, err)
 	}
 
 	var compat clientConfigCompat
-	if err := json.Unmarshal(data, &compat); err != nil {
-		return ClientConfig{}, err
+	if err := yaml.Unmarshal(data, &compat); err != nil {
+		return ClientConfig{}, fmt.Errorf("parse client config compat %s: %w", path, err)
 	}
 	applyClientCompat(&cfg, compat)
 
@@ -262,29 +263,29 @@ func load(path string, out any) error {
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(data, out); err != nil {
+	if err := yaml.Unmarshal(data, out); err != nil {
 		return err
 	}
 	return nil
 }
 
 type serverConfigCompat struct {
-	Codec           string                 `json:"codec"`
-	Bitrate         int                    `json:"bitrate"`
-	RGBACodecConfig map[string]interface{} `json:"rgba_codec_config"`
-	H264CodecConfig map[string]interface{} `json:"h264_codec_config"`
+	Codec           string                 `json:"codec" yaml:"codec"`
+	Bitrate         int                    `json:"bitrate" yaml:"bitrate"`
+	RGBACodecConfig map[string]interface{} `json:"rgba_codec_config" yaml:"rgba_codec_config"`
+	H264CodecConfig map[string]interface{} `json:"h264_codec_config" yaml:"h264_codec_config"`
 }
 
 type clientConfigCompat struct {
 	Stats struct {
-		Debug       *bool `json:"debug"`
-		ShowOverlay *bool `json:"show_overlay"`
-	} `json:"stats"`
+		Debug       *bool `json:"debug" yaml:"debug"`
+		ShowOverlay *bool `json:"show_overlay" yaml:"show_overlay"`
+	} `json:"stats" yaml:"stats"`
 	Network struct {
-		AllowPartial  *bool `json:"allow_partial_frames"`
-		ForceOutput   *bool `json:"force_output_partial"`
-		AutoTuneByFPS *bool `json:"auto_tune_by_fps"`
-	} `json:"network"`
+		AllowPartial  *bool `json:"allow_partial_frames" yaml:"allow_partial_frames"`
+		ForceOutput   *bool `json:"force_output_partial" yaml:"force_output_partial"`
+		AutoTuneByFPS *bool `json:"auto_tune_by_fps" yaml:"auto_tune_by_fps"`
+	} `json:"network" yaml:"network"`
 }
 
 func applyClientCompat(cfg *ClientConfig, compat clientConfigCompat) {
