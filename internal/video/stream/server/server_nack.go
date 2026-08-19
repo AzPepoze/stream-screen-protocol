@@ -59,9 +59,10 @@ func (s *Sender) listenForNACKs() {
 				if err != nil || s.blockyPipeline == nil {
 					continue
 				}
-				packets, err := s.blockyPipeline.BuildTilesBatch(s.frameSeq, tileIDs, stream.NowTimestampMS())
+				frameSeq := s.currentFrameSeq()
+				packets, err := s.blockyPipeline.BuildTilesBatch(frameSeq, tileIDs, stream.NowTimestampMS())
 				if err == nil && len(packets) > 0 {
-					s.enqueueRepair(addr, packets, s.frameSeq)
+					s.enqueueRepair(addr, packets, frameSeq)
 				}
 
 			case stream.CSPPacketTypeControl:
