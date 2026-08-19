@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"streamscreen/internal/config"
@@ -113,6 +114,14 @@ func frameDeadlineForFPS(fps int) time.Duration {
 	return deadline
 }
 
+func (s *Sender) nextFrameSeq() uint32 {
+	return atomic.AddUint32(&s.frameSeq, 1)
+}
+
+func (s *Sender) currentFrameSeq() uint32 {
+	return atomic.LoadUint32(&s.frameSeq)
+}
+
 func (s *Sender) StartControlPlane() {
 	go s.listenForNACKs()
 	go s.viewerCleanupLoop()
@@ -147,13 +156,13 @@ func (s *Sender) ProcessRGBAFrame(rgbaData []byte) {
 		return
 	}
 
-	s.frameSeq++
-	packets, err := s.blockyPipeline.BuildTilesBatch(s.frameSeq, tilesToSend, stream.NowTimestampMS())
+	frameSeq := s.nextFrameSeq()
+	packets, err := s.blockyPipeline.BuildTilesBatch(frameSeq, tilesToSend, stream.NowTimestampMS())
 	if err != nil {
 		logger.Info("[server] blocky packetization failed: %v", err)
 		return
 	}
-	s.broadcastVideoBatch(packets, s.frameSeq)
+	s.broadcastVideoBatch(packets, frameSeq)
 }
 
 func (s *Sender) Stop() error {
