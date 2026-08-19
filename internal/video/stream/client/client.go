@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"fmt"
-	"streamscreen/internal/logger"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -12,35 +11,37 @@ import (
 	"streamscreen/internal/audio/opus"
 	"streamscreen/internal/audio/playback"
 	"streamscreen/internal/config"
-	videoh264 "streamscreen/internal/video/codec/h264"
+	"streamscreen/internal/logger"
 	"streamscreen/internal/video/codec/blocky"
+	videoh264 "streamscreen/internal/video/codec/h264"
 )
 
-// ClientReceiver handles jitter buffering, NACKs, and frame decoding.
+// ClientReceiver handles jitter buffering, FEC recovery, NACKs, and frame decoding.
 type ClientReceiver struct {
 	cfg           config.ClientConfig
 	conn          *net.UDPConn
 	serverAddr    *net.UDPAddr
 	jitterBuffer  *JitterBuffer
-	tileGrid      *TileGrid                      // Tile-based screen buffer
-	tileFragBuf   map[string]*TileFragmentBuffer // For reassembling fragmented tiles
+	fecRecoverer  *FECRecoverer
+	tileGrid      *TileGrid
+	tileFragBuf   map[string]*TileFragmentBuffer
 	tileFragBufMu sync.RWMutex
-	frameBuffer   []byte       // Full RGBA frame buffer (updated as tiles arrive)
-	frameBufferMu sync.RWMutex // Protects frame buffer during tile writes
+	frameBuffer   []byte
+	frameBufferMu sync.RWMutex
 	ctx           context.Context
 	cancel        context.CancelFunc
-	pixels        []byte // Current display pixels
-	prevPixels    []byte // Previous complete frame (fallback)
+	pixels        []byte
+	prevPixels    []byte
 	pixelsMu      sync.RWMutex
 	frameSeq      uint64
 	frameChan     chan assembledFrame
-	tileGridSize  int          // Tiles per side (3 = 3x3 grid)
-	videoWidth    uint32       // Received from server
-	videoHeight   uint32       // Received from server
-	videoFPS      uint32       // Received from server
-	codecName     string       // Codec type from server VideoInfo packet
-	videoInfoMu   sync.RWMutex // Protects video info
-	blockyPipeline  *blocky.ClientPipeline
+	tileGridSize  int
+	videoWidth    uint32
+	videoHeight   uint32
+	videoFPS      uint32
+	codecName     string
+	videoInfoMu   sync.RWMutex
+	blockyPipeline *blocky.ClientPipeline
 	h264Pipeline  *videoh264.ClientPipeline
 	h264ErrMu     sync.Mutex
 	h264ErrCount  uint64
@@ -59,9 +60,15 @@ type ClientReceiver struct {
 	audioFrames   chan []byte
 	audioFragMu   sync.Mutex
 	audioFragBuf  map[uint32]*audioFragmentBuffer
-	ccFrameDrops  uint64
-	ccAudioDrops  uint64
-	ccNACKSent    uint64
+
+	ccFrameDrops      uint64
+	ccAudioDrops      uint64
+	ccNACKSent        uint64
+	ccFECRecovered    uint64
+	ccPacketsReceived uint64
+	ccBytesReceived   uint64
+	ccRTTMS           uint32
+	ccProbeNonce      uint32
 }
 
 type audioFragmentBuffer struct {
@@ -70,11 +77,11 @@ type audioFragmentBuffer struct {
 	receivedAt   time.Time
 }
 
-// TileFragmentBuffer holds reassembly data for fragmented tiles
+// TileFragmentBuffer holds reassembly data for fragmented tiles.
 type TileFragmentBuffer struct {
-	fragments    map[uint32][]byte // PacketID -> fragment data
+	fragments    map[uint32][]byte
 	totalPackets uint32
-	tileID       uint16 // Extracted from first fragment
+	tileID       uint16
 	receivedAt   time.Time
 }
 
@@ -83,29 +90,34 @@ func NewClientReceiver(cfg config.ClientConfig) (*ClientReceiver, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Optimize socket buffers for high-throughput streaming
 	_ = conn.SetReadBuffer(4 * 1024 * 1024)
 
 	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", cfg.ServerHost, cfg.Port))
 	if err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	maxLatency := time.Duration(cfg.Network.MaxLatencyMS) * time.Millisecond
 	jb := NewJitterBufferWithOptions(JitterBufferOptions{
-		MaxLatency:        time.Duration(cfg.Network.MaxLatencyMS) * time.Millisecond,
+		MaxLatency:        maxLatency,
 		LossTolerance:     0.1,
 		NackRetryDelay:    time.Duration(cfg.Network.NackRetryMS) * time.Millisecond,
 		PartialFrameReady: cfg.Network.PartialFrameReady,
 		AllowPartial:      cfg.Network.AllowPartial,
 		ForceOutput:       cfg.Network.ForceOutput,
 	})
+	fecMaxAge := maxLatency * 2
+	if fecMaxAge < 100*time.Millisecond {
+		fecMaxAge = 100 * time.Millisecond
+	}
 	return &ClientReceiver{
 		cfg:           cfg,
 		conn:          conn,
 		serverAddr:    serverAddr,
 		jitterBuffer:  jb,
+		fecRecoverer:  NewFECRecoverer(fecMaxAge),
 		tileFragBuf:   make(map[string]*TileFragmentBuffer),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -121,7 +133,6 @@ func NewClientReceiver(cfg config.ClientConfig) (*ClientReceiver, error) {
 }
 
 func (r *ClientReceiver) Start() error {
-	// Start receive loop first to listen for server video info
 	go r.receiveLoop()
 	go r.nackLoop()
 	go r.joinLoop()
@@ -179,7 +190,6 @@ func (r *ClientReceiver) Start() error {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timeout waiting for video info from server after 30s")
 		}
-
 		select {
 		case <-time.After(100 * time.Millisecond):
 			continue
@@ -193,20 +203,42 @@ func (r *ClientReceiver) applyJitterTimingFromFPS(fps int) {
 	if !r.autoTuneByFPS || fps <= 0 {
 		return
 	}
+	maxLatency, nackRetry := autoJitterTiming(
+		fps,
+		time.Duration(r.cfg.Network.MaxLatencyMS)*time.Millisecond,
+		time.Duration(r.cfg.Network.NackRetryMS)*time.Millisecond,
+	)
+	r.jitterBuffer.ConfigureTiming(maxLatency, nackRetry)
+	logger.Info("Client: auto network timing fps=%d max_latency=%s nack_retry=%s", fps, maxLatency, nackRetry)
+}
 
+func autoJitterTiming(fps int, configuredMaxLatency, configuredNACK time.Duration) (time.Duration, time.Duration) {
+	if fps <= 0 {
+		fps = 60
+	}
 	framePeriod := time.Second / time.Duration(fps)
 	maxLatency := framePeriod * 4
-	if maxLatency < 200*time.Millisecond {
-		maxLatency = 200 * time.Millisecond
+	if maxLatency < 25*time.Millisecond {
+		maxLatency = 25 * time.Millisecond
 	}
-	nackRetry := framePeriod / 4
-	if nackRetry < 20*time.Millisecond {
-		nackRetry = 20 * time.Millisecond
+	if maxLatency > 100*time.Millisecond {
+		maxLatency = 100 * time.Millisecond
 	}
-	if nackRetry > 250*time.Millisecond {
-		nackRetry = 250 * time.Millisecond
+	if configuredMaxLatency > 0 && configuredMaxLatency < maxLatency {
+		maxLatency = configuredMaxLatency
 	}
-	r.jitterBuffer.ConfigureTiming(maxLatency, nackRetry)
+
+	nackRetry := framePeriod / 2
+	if nackRetry < 3*time.Millisecond {
+		nackRetry = 3 * time.Millisecond
+	}
+	if nackRetry > 15*time.Millisecond {
+		nackRetry = 15 * time.Millisecond
+	}
+	if configuredNACK > 0 && configuredNACK < nackRetry {
+		nackRetry = configuredNACK
+	}
+	return maxLatency, nackRetry
 }
 
 func (r *ClientReceiver) Pixels() ([]byte, uint64) {
@@ -260,7 +292,6 @@ func (r *ClientReceiver) startAudioPipeline() error {
 	}
 	r.audioDecoder = decoder
 	r.audioPlayer = player
-
 	go r.audioLoop()
 	return nil
 }

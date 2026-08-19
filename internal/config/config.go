@@ -222,6 +222,19 @@ func validateH264BackendValue(cfg map[string]interface{}, key string) error {
 	if !ok {
 		return fmt.Errorf("%s must be a string", key)
 	}
+
+	if key == "h264_encoder_backend" {
+		switch v {
+		case "", "auto", "gstreamer", "ffmpeg", "amf", "nvenc", "vaapi":
+			return nil
+		default:
+			return fmt.Errorf("%s must be one of auto, gstreamer, ffmpeg, amf, nvenc, vaapi", key)
+		}
+	}
+
+	// Hardware-specific decoder backends are not implemented yet. Keep the
+	// accepted decoder set aligned with NewDecoder rather than accepting a
+	// value that would only fail later at runtime.
 	switch v {
 	case "", "auto", "gstreamer", "ffmpeg":
 		return nil

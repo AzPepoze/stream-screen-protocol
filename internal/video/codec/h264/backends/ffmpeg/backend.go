@@ -2,8 +2,9 @@ package ffmpeg
 
 import (
 	"fmt"
-	"io"
-	"os/exec"
+	"sync"
+
+	"streamscreen/internal/video/codec/h264/backends/rtpffmpeg"
 )
 
 type Encoder struct {
@@ -12,9 +13,15 @@ type Encoder struct {
 	tune    string
 	bitrate int
 	keyInt  int
+
+	mu      sync.Mutex
+	session *rtpffmpeg.Session
+	width   int
+	height  int
 }
 
 type Decoder struct {
+	session *rtpffmpeg.Decoder
 }
 
 func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
@@ -48,162 +55,87 @@ func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
 	return &Encoder{fps: fps, preset: preset, tune: tune, bitrate: bitrate, keyInt: keyInt}, nil
 }
 
-func (e *Encoder) Encode(rgbaData []byte, width, height int) ([]byte, error) {
+func (e *Encoder) ensureSession(width, height int) error {
 	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("ffmpeg encoder: invalid dimensions %dx%d", width, height)
+		return fmt.Errorf("ffmpeg encoder: invalid dimensions %dx%d", width, height)
 	}
+	if e.session != nil && e.width == width && e.height == height {
+		return nil
+	}
+	if e.session != nil {
+		_ = e.session.Close()
+		e.session = nil
+	}
+
+	session, err := rtpffmpeg.New(rtpffmpeg.Config{
+		Codec:       "libx264",
+		InputFormat: "rgba",
+		FPS:         e.fps,
+		Width:       width,
+		Height:      height,
+		ExtraArgs: []string{
+			"-preset", e.preset,
+			"-tune", e.tune,
+			"-b:v", fmt.Sprintf("%dk", e.bitrate),
+			"-maxrate", fmt.Sprintf("%dk", e.bitrate),
+			"-bufsize", fmt.Sprintf("%dk", e.bitrate*2),
+			"-bf", "0",
+			"-x264-params", fmt.Sprintf("aud=1:bframes=0:keyint=%d:min-keyint=%d:scenecut=0:repeat-headers=1", e.keyInt, e.keyInt),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	e.session = session
+	e.width = width
+	e.height = height
+	return nil
+}
+
+func (e *Encoder) Encode(rgbaData []byte, width, height int) ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	if len(rgbaData) != width*height*4 {
 		return nil, fmt.Errorf("ffmpeg encoder: invalid RGBA frame size got=%d expected=%d", len(rgbaData), width*height*4)
 	}
-
-	args := []string{
-		"-hide_banner",
-		"-nostdin",
-		"-loglevel", "error",
-		"-f", "rawvideo",
-		"-pix_fmt", "rgba",
-		"-s", fmt.Sprintf("%dx%d", width, height),
-		"-r", fmt.Sprintf("%d", e.fps),
-		"-i", "pipe:0",
-		"-an",
-		"-frames:v", "1",
-		"-c:v", "libx264",
-		"-preset", e.preset,
-		"-tune", e.tune,
-		"-b:v", fmt.Sprintf("%dk", e.bitrate),
-		"-maxrate", fmt.Sprintf("%dk", e.bitrate),
-		"-bufsize", fmt.Sprintf("%dk", e.bitrate*2),
-		"-x264-params", fmt.Sprintf("aud=1:bframes=0:keyint=%d:min-keyint=%d:scenecut=0:repeat-headers=1", e.keyInt, e.keyInt),
-		"-f", "h264",
-		"pipe:1",
+	if err := e.ensureSession(width, height); err != nil {
+		return nil, fmt.Errorf("ffmpeg encoder: persistent session: %w", err)
 	}
-
-	cmd := exec.Command("ffmpeg", args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg encoder stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg encoder stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg encoder stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("ffmpeg encoder start failed: %w", err)
-	}
-
-	if _, err := stdin.Write(rgbaData); err != nil {
-		_ = stdin.Close()
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		return nil, fmt.Errorf("ffmpeg encoder stdin write failed: %w", err)
-	}
-	_ = stdin.Close()
-
-	out, readErr := io.ReadAll(stdout)
-	errOut, _ := io.ReadAll(stderr)
-	waitErr := cmd.Wait()
-
-	if readErr != nil {
-		return nil, fmt.Errorf("ffmpeg encoder stdout read failed: %w", readErr)
-	}
-	if waitErr != nil {
-		if len(errOut) > 0 {
-			return nil, fmt.Errorf("ffmpeg encoder failed: %s", string(errOut))
-		}
-		return nil, fmt.Errorf("ffmpeg encoder failed: %w", waitErr)
-	}
-	if len(out) == 0 {
-		if len(errOut) > 0 {
-			return nil, fmt.Errorf("ffmpeg encoder produced no output: %s", string(errOut))
-		}
-		return nil, fmt.Errorf("ffmpeg encoder produced no output")
-	}
-
-	return out, nil
+	return e.session.Encode(rgbaData)
 }
 
-func (e *Encoder) Close() error { return nil }
+func (e *Encoder) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.session != nil {
+		err := e.session.Close()
+		e.session = nil
+		return err
+	}
+	return nil
+}
 
 func NewDecoder(cfg map[string]interface{}) (*Decoder, error) {
 	_ = cfg
-	return &Decoder{}, nil
+	return &Decoder{session: rtpffmpeg.NewDecoder()}, nil
 }
 
 func (d *Decoder) Decode(encodedData []byte, width, height int) ([]byte, error) {
-	if len(encodedData) == 0 {
-		return nil, fmt.Errorf("ffmpeg decoder: empty encoded data")
+	if d.session == nil {
+		return nil, fmt.Errorf("ffmpeg decoder: decoder is closed")
 	}
-	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("ffmpeg decoder: invalid dimensions %dx%d", width, height)
-	}
-
-	args := []string{
-		"-hide_banner",
-		"-nostdin",
-		"-loglevel", "error",
-		"-f", "h264",
-		"-i", "pipe:0",
-		"-an",
-		"-frames:v", "1",
-		"-f", "rawvideo",
-		"-pix_fmt", "rgba",
-		"pipe:1",
-	}
-
-	cmd := exec.Command("ffmpeg", args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg decoder stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg decoder stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("ffmpeg decoder stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("ffmpeg decoder start failed: %w", err)
-	}
-
-	if _, err := stdin.Write(encodedData); err != nil {
-		_ = stdin.Close()
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		return nil, fmt.Errorf("ffmpeg decoder stdin write failed: %w", err)
-	}
-	_ = stdin.Close()
-
-	out, readErr := io.ReadAll(stdout)
-	errOut, _ := io.ReadAll(stderr)
-	waitErr := cmd.Wait()
-
-	if readErr != nil {
-		return nil, fmt.Errorf("ffmpeg decoder stdout read failed: %w", readErr)
-	}
-	if waitErr != nil {
-		if len(errOut) > 0 {
-			return nil, fmt.Errorf("ffmpeg decoder failed: %s", string(errOut))
-		}
-		return nil, fmt.Errorf("ffmpeg decoder failed: %w", waitErr)
-	}
-
-	expected := width * height * 4
-	if len(out) != expected {
-		return nil, fmt.Errorf("ffmpeg decoder: invalid output size got=%d expected=%d", len(out), expected)
-	}
-
-	return out, nil
+	return d.session.Decode(encodedData, width, height)
 }
 
-func (d *Decoder) Close() error { return nil }
+func (d *Decoder) Close() error {
+	if d.session == nil {
+		return nil
+	}
+	err := d.session.Close()
+	d.session = nil
+	return err
+}
 
 func intFrom(cfg map[string]interface{}, key string, fallback int) int {
 	if cfg == nil {

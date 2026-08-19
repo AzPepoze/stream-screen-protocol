@@ -83,7 +83,7 @@ func defaultDecoderBackend() string {
 func encoderBackendFromConfig(cfg Config) (string, error) {
 	selected := normalizeBackend(cfg.GetString("h264_encoder_backend", BackendAuto))
 	if selected == "" {
-		return "", fmt.Errorf("invalid h264_encoder_backend, expected auto|gstreamer|ffmpeg")
+		return "", fmt.Errorf("invalid h264_encoder_backend, expected auto|gstreamer|ffmpeg|amf|nvenc|vaapi")
 	}
 	if selected == BackendAuto {
 		selected = defaultEncoderBackend()

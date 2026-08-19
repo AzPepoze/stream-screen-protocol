@@ -1,69 +1,42 @@
 package server
 
 import (
-	"streamscreen/internal/logger"
-	"time"
+	"sync/atomic"
 
 	"streamscreen/internal/video/stream"
 )
 
+// transmitFrame is retained for generic encoded-frame call sites. It now
+// packetizes once and uses the same multi-viewer fan-out path as H.264.
 func (s *Sender) transmitFrame(data []byte) {
-	s.destAddrMu.RLock()
-	dest := s.destAddr
-	s.destAddrMu.RUnlock()
-
-	if dest == nil {
-		logger.Info("Server: no client discovered, dropping frame")
-		return // No client discovered yet
+	if len(data) == 0 || s.viewerCount() == 0 {
+		return
 	}
 
-	s.frameSeq++
-	timestamp := uint32(0)
-
-	totalPackets := uint32((len(data) + stream.CSPMaxPayloadSize - 1) / stream.CSPMaxPayloadSize)
-
-	logger.Info("Server: transmit frame=%d totalPackets=%d size=%d dest=%s", s.frameSeq, totalPackets, len(data), dest.String())
-
-	// Build all packets first, then send in burst
-	packets := make([][]byte, totalPackets)
+	frameSeq := atomic.AddUint32(&s.frameSeq, 1)
+	timestamp := stream.NowTimestampMS()
+	totalPackets := uint32((len(data) + stream.CSPMediaPayloadSize - 1) / stream.CSPMediaPayloadSize)
+	packets := make([][]byte, 0, totalPackets)
 	for i := uint32(0); i < totalPackets; i++ {
-		start := i * stream.CSPMaxPayloadSize
-		end := start + stream.CSPMaxPayloadSize
+		start := i * stream.CSPMediaPayloadSize
+		end := start + stream.CSPMediaPayloadSize
 		if end > uint32(len(data)) {
 			end = uint32(len(data))
 		}
-
 		payload := data[start:end]
 		packet := make([]byte, stream.CSPHeaderSize+len(payload))
-
 		header := stream.PacketHeader{
 			Version:      stream.CSPVersion,
 			PacketType:   stream.CSPPacketTypeData,
-			FrameSeq:     s.frameSeq,
+			FrameSeq:     frameSeq,
 			PacketID:     i,
 			TotalPackets: totalPackets,
 			Timestamp:    timestamp,
 		}
 		header.Marshal(packet[:stream.CSPHeaderSize])
 		copy(packet[stream.CSPHeaderSize:], payload)
-
-		// Store in retransmit buffer
-		s.buffer.Put(s.frameSeq, i, packet)
-		packets[i] = packet
+		s.buffer.Put(frameSeq, i, packet)
+		packets = append(packets, packet)
 	}
-
-	// Burst send all packets with minimal delay
-	sentCount := 0
-	packetGap := s.videoPacketGap()
-	for _, packet := range packets {
-		_, err := s.conn.WriteToUDP(packet, dest)
-		if err != nil {
-			logger.Info("Server: write error frame=%d dest=%s err=%v", s.frameSeq, dest.String(), err)
-		} else {
-			sentCount++
-		}
-		if packetGap > 0 {
-			time.Sleep(packetGap)
-		}
-	}
+	s.broadcastVideoBatch(packets, frameSeq)
 }
