@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: csp-v2-validation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-linux:
     runs-on: ubuntu-24.04
@@ -29,7 +33,7 @@ jobs:
             libxinerama-dev \
             libxxf86vm-dev
       - name: Run tests
-        run: go test -tags nolibopusfile ./...
+        run: go test -timeout 3m -tags nolibopusfile ./...
       - name: Build Linux
         run: make build-linux
 
