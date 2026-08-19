@@ -1,0 +1,44 @@
+name: Docker netem relay
+
+on:
+  pull_request:
+    paths:
+      - "tests/netem/**"
+      - ".github/workflows/netem.yml"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-netem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Start relay containers with CI-only echo target
+        run: docker compose -f tests/netem/compose.yml -f tests/netem/compose.smoke.yml up -d --build
+
+      - name: Send host traffic through both relays
+        run: python3 tests/netem/smoke.py
+
+      - name: Show relay qdiscs and logs
+        if: always()
+        run: |
+          docker exec csp-netem-relay-a tc qdisc show dev eth0 || true
+          docker exec csp-netem-relay-b tc qdisc show dev eth0 || true
+          docker compose -f tests/netem/compose.yml -f tests/netem/compose.smoke.yml logs --no-color
+
+      - name: Clean up
+        if: always()
+        run: docker compose -f tests/netem/compose.yml -f tests/netem/compose.smoke.yml down --remove-orphans
