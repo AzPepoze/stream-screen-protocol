@@ -12,17 +12,19 @@ import (
 )
 
 type Encoder struct {
-	pipeline  *gst.Pipeline
-	appsrc    *app.Source
-	appsink   *app.Sink
-	width     int
-	height    int
-	nextPTS   gst.ClockTime
-	frameDur  gst.ClockTime
-	bitrate   int
-	preset    string
-	tune      string
-	keyIntMax int
+	pipeline    *gst.Pipeline
+	appsrc      *app.Source
+	appsink     *app.Sink
+	encoderElem *gst.Element
+	width       int
+	height      int
+	nextPTS     gst.ClockTime
+	frameDur    gst.ClockTime
+	bitrate     int
+	preset      string
+	tune        string
+	keyIntMax   int
+	bitrateMu   sync.Mutex
 }
 
 func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
@@ -63,7 +65,7 @@ func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
 	pipelineStr := fmt.Sprintf(
 		"appsrc name=src is-live=true format=time do-timestamp=true block=false ! "+
 			"queue leaky=downstream max-size-buffers=2 ! videoconvert ! "+
-			"x264enc bitrate=%d pass=cbr vbv-buf-capacity=100 speed-preset=%s tune=%s key-int-max=%d %sbframes=0 byte-stream=true aud=true sliced-threads=true ! "+
+			"x264enc name=encoder bitrate=%d pass=cbr vbv-buf-capacity=100 speed-preset=%s tune=%s key-int-max=%d %sbframes=0 byte-stream=true aud=true sliced-threads=true ! "+
 			"video/x-h264,stream-format=byte-stream,alignment=au ! "+
 			"appsink name=sink sync=false async=false max-buffers=1 drop=true",
 		bitrate, preset, tune, keyIntMax, intraRefreshParam,
@@ -82,10 +84,14 @@ func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("h264: failed to get appsink: %w", err)
 	}
+	encoderElem, err := pipeline.GetElementByName("encoder")
+	if err != nil {
+		return nil, fmt.Errorf("h264: failed to get x264 encoder: %w", err)
+	}
 	appsrc := app.SrcFromElement(appsrcElem)
 	appsink := app.SinkFromElement(appsinkElem)
-	if appsrc == nil || appsink == nil {
-		return nil, fmt.Errorf("h264: failed to convert appsrc/appsink elements")
+	if appsrc == nil || appsink == nil || encoderElem == nil {
+		return nil, fmt.Errorf("h264: failed to convert pipeline elements")
 	}
 
 	if err := pipeline.SetState(gst.StatePlaying); err != nil {
@@ -93,15 +99,38 @@ func NewEncoder(cfg map[string]interface{}) (*Encoder, error) {
 	}
 
 	return &Encoder{
-		pipeline:  pipeline,
-		appsrc:    appsrc,
-		appsink:   appsink,
-		frameDur:  gst.ClockTime((time.Second / time.Duration(fps)).Nanoseconds()),
-		bitrate:   bitrate,
-		preset:    preset,
-		tune:      tune,
-		keyIntMax: keyIntMax,
+		pipeline:    pipeline,
+		appsrc:      appsrc,
+		appsink:     appsink,
+		encoderElem: encoderElem,
+		frameDur:    gst.ClockTime((time.Second / time.Duration(fps)).Nanoseconds()),
+		bitrate:     bitrate,
+		preset:      preset,
+		tune:        tune,
+		keyIntMax:   keyIntMax,
 	}, nil
+}
+
+// SetBitrateKbps adjusts x264enc while the pipeline is PLAYING. x264enc marks
+// the bitrate property mutable in PLAYING, so adaptive control does not require
+// rebuilding the encoder or interrupting the reference chain.
+func (e *Encoder) SetBitrateKbps(bitrate int) error {
+	if bitrate <= 0 {
+		return fmt.Errorf("h264: invalid bitrate %d kbps", bitrate)
+	}
+	if e.encoderElem == nil {
+		return fmt.Errorf("h264: encoder element not initialized")
+	}
+	e.bitrateMu.Lock()
+	defer e.bitrateMu.Unlock()
+	if bitrate == e.bitrate {
+		return nil
+	}
+	if err := e.encoderElem.GObject().SetProperty("bitrate", uint(bitrate)); err != nil {
+		return fmt.Errorf("h264: failed to update bitrate to %d kbps: %w", bitrate, err)
+	}
+	e.bitrate = bitrate
+	return nil
 }
 
 func (e *Encoder) ForceKeyframe() error {
