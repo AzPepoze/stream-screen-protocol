@@ -27,6 +27,8 @@ type Decoder struct {
 	closed bool
 }
 
+var h264AccessUnitBoundary = []byte{0x00, 0x00, 0x00, 0x01, 0x09, 0xf0}
+
 func NewDecoder() *Decoder {
 	return &Decoder{}
 }
@@ -42,11 +44,14 @@ func (d *Decoder) start(width, height int) error {
 		"-loglevel", "error",
 		"-fflags", "nobuffer",
 		"-flags", "low_delay",
+		"-probesize", "32",
+		"-analyzeduration", "0",
 		"-f", "h264",
 		"-i", "pipe:0",
 		"-an",
 		"-f", "rawvideo",
 		"-pix_fmt", "rgba",
+		"-flush_packets", "1",
 		"pipe:1",
 	}
 	cmd := exec.Command("ffmpeg", args...)
@@ -154,6 +159,13 @@ func (d *Decoder) Decode(accessUnit []byte, width, height int) ([]byte, error) {
 	done := d.done
 	if _, err := stdin.Write(accessUnit); err != nil {
 		return nil, fmt.Errorf("rtpffmpeg decoder: write access unit: %w", err)
+	}
+	// The raw H.264 parser normally finalizes a picture when it sees the start
+	// of the following access unit. Since Decode is synchronous and the FFmpeg
+	// process stays alive, append a standalone AUD delimiter after each unit so
+	// the current picture can be emitted immediately without closing stdin.
+	if _, err := stdin.Write(h264AccessUnitBoundary); err != nil {
+		return nil, fmt.Errorf("rtpffmpeg decoder: write access-unit boundary: %w", err)
 	}
 
 	timer := time.NewTimer(2 * time.Second)
