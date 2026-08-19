@@ -41,14 +41,36 @@ func (r *ClientReceiver) receiveLoop() {
 				r.handleAudioDataPacket(h.FrameSeq, h.PacketID, h.TotalPackets, buf[stream.CSPHeaderSize:n])
 			case stream.CSPPacketTypeData:
 				payload := buf[stream.CSPHeaderSize:n]
-				if data, seq := r.jitterBuffer.Push(h, payload); data != nil {
-					r.enqueueFrameLatest(assembledFrame{Seq: seq, Data: data})
+				recovered := r.fecRecoverer.PushData(h, payload)
+				r.pushVideoPacket(h, payload)
+				r.pushRecoveredPackets(recovered)
+			case stream.CSPPacketTypeFEC:
+				recovered, err := r.fecRecoverer.PushFEC(buf[:n])
+				if err == nil {
+					r.pushRecoveredPackets(recovered)
 				}
 			case stream.CSPPacketTypeProbeReply:
 				rtt := stream.TimestampAgeMS(h.Timestamp)
 				atomic.StoreUint32(&r.ccRTTMS, rtt)
 			}
 		}
+	}
+}
+
+func (r *ClientReceiver) pushRecoveredPackets(packets []recoveredPacket) {
+	if len(packets) == 0 {
+		return
+	}
+	atomic.AddUint64(&r.ccFECRecovered, uint64(len(packets)))
+	for _, packet := range packets {
+		r.pushVideoPacket(packet.Header, packet.Payload)
+	}
+}
+
+func (r *ClientReceiver) pushVideoPacket(h stream.PacketHeader, payload []byte) {
+	if data, seq := r.jitterBuffer.Push(h, payload); data != nil {
+		r.fecRecoverer.ForgetFrame(seq)
+		r.enqueueFrameLatest(assembledFrame{Seq: seq, Data: data})
 	}
 }
 
