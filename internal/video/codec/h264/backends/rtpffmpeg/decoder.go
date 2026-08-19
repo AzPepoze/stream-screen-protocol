@@ -71,57 +71,63 @@ func (d *Decoder) start(width, height int) error {
 		return fmt.Errorf("rtpffmpeg decoder: start FFmpeg: %w", err)
 	}
 
+	frames := make(chan []byte, 4)
+	errCh := make(chan error, 1)
+	done := make(chan struct{})
+
 	d.cmd = cmd
 	d.stdin = stdin
 	d.stdout = stdout
 	d.width = width
 	d.height = height
-	d.frames = make(chan []byte, 4)
-	d.errCh = make(chan error, 1)
-	d.done = make(chan struct{})
+	d.frames = frames
+	d.errCh = errCh
+	d.done = done
 
-	go func() {
+	go func(stderr io.Reader) {
 		_, _ = io.Copy(io.Discard, stderr)
-	}()
-	go d.readFrames(width * height * 4)
-	go func() {
-		err := cmd.Wait()
-		select {
-		case <-d.done:
-			return
-		default:
-		}
-		if err == nil {
-			err = errors.New("FFmpeg decoder exited unexpectedly")
-		}
-		select {
-		case d.errCh <- fmt.Errorf("rtpffmpeg decoder: %w", err):
-		default:
-		}
-	}()
+	}(stderr)
+	go readDecodedFrames(stdout, width*height*4, frames, errCh, done)
+	go waitDecoderProcess(cmd, errCh, done)
 	return nil
 }
 
-func (d *Decoder) readFrames(frameSize int) {
+func readDecodedFrames(stdout io.Reader, frameSize int, frames chan<- []byte, errCh chan<- error, done <-chan struct{}) {
 	for {
 		frame := make([]byte, frameSize)
-		if _, err := io.ReadFull(d.stdout, frame); err != nil {
+		if _, err := io.ReadFull(stdout, frame); err != nil {
 			select {
-			case <-d.done:
+			case <-done:
 				return
 			default:
 			}
 			select {
-			case d.errCh <- fmt.Errorf("rtpffmpeg decoder: read frame: %w", err):
+			case errCh <- fmt.Errorf("rtpffmpeg decoder: read frame: %w", err):
 			default:
 			}
 			return
 		}
 		select {
-		case d.frames <- frame:
-		case <-d.done:
+		case frames <- frame:
+		case <-done:
 			return
 		}
+	}
+}
+
+func waitDecoderProcess(cmd *exec.Cmd, errCh chan<- error, done <-chan struct{}) {
+	err := cmd.Wait()
+	select {
+	case <-done:
+		return
+	default:
+	}
+	if err == nil {
+		err = errors.New("FFmpeg decoder exited unexpectedly")
+	}
+	select {
+	case errCh <- fmt.Errorf("rtpffmpeg decoder: %w", err):
+	default:
 	}
 }
 
@@ -142,41 +148,51 @@ func (d *Decoder) Decode(accessUnit []byte, width, height int) ([]byte, error) {
 		}
 	}
 
-	if _, err := d.stdin.Write(accessUnit); err != nil {
+	stdin := d.stdin
+	frames := d.frames
+	errCh := d.errCh
+	done := d.done
+	if _, err := stdin.Write(accessUnit); err != nil {
 		return nil, fmt.Errorf("rtpffmpeg decoder: write access unit: %w", err)
 	}
 
 	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
 	select {
-	case frame := <-d.frames:
+	case frame := <-frames:
 		return frame, nil
-	case err := <-d.errCh:
+	case err := <-errCh:
 		return nil, err
 	case <-timer.C:
 		return nil, errors.New("rtpffmpeg decoder: timed out waiting for decoded frame")
-	case <-d.done:
+	case <-done:
 		return nil, errors.New("rtpffmpeg decoder: decoder stopped")
 	}
 }
 
 func (d *Decoder) stopLocked() {
-	if d.done != nil {
+	done := d.done
+	stdin := d.stdin
+	stdout := d.stdout
+	cmd := d.cmd
+
+	if done != nil {
 		select {
-		case <-d.done:
+		case <-done:
 		default:
-			close(d.done)
+			close(done)
 		}
 	}
-	if d.stdin != nil {
-		_ = d.stdin.Close()
+	if stdin != nil {
+		_ = stdin.Close()
 	}
-	if d.stdout != nil {
-		_ = d.stdout.Close()
+	if stdout != nil {
+		_ = stdout.Close()
 	}
-	if d.cmd != nil && d.cmd.Process != nil {
-		_ = d.cmd.Process.Kill()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
 	}
+
 	d.cmd = nil
 	d.stdin = nil
 	d.stdout = nil
