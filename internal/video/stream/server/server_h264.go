@@ -29,7 +29,23 @@ func (s *Sender) EnsureH264Pipeline() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize h264 pipeline: %w", err)
 	}
-	s.h264Pipeline = pipeline
+
+	// Another goroutine may have initialized/reconfigured the pipeline while
+	// the relatively expensive GStreamer construction happened outside cfgMu.
+	s.cfgMu.Lock()
+	if s.codecName != "h264" {
+		s.cfgMu.Unlock()
+		_ = pipeline.Close()
+		return nil
+	}
+	if s.h264Pipeline == nil {
+		s.h264Pipeline = pipeline
+		pipeline = nil
+	}
+	s.cfgMu.Unlock()
+	if pipeline != nil {
+		_ = pipeline.Close()
+	}
 	return nil
 }
 
@@ -43,7 +59,14 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 		return err
 	}
 
-	encodedData, err := s.h264Pipeline.SendFrame(frameData, width, height)
+	s.cfgMu.RLock()
+	pipeline := s.h264Pipeline
+	s.cfgMu.RUnlock()
+	if pipeline == nil {
+		return fmt.Errorf("h264 pipeline unavailable")
+	}
+
+	encodedData, err := pipeline.SendFrame(frameData, width, height)
 	if err != nil {
 		return fmt.Errorf("h264 encoding failed: %w", err)
 	}
@@ -110,10 +133,12 @@ func h264AccessUnitHasIDR(data []byte) bool {
 }
 
 func (s *Sender) CloseH264Pipeline() error {
-	if s.h264Pipeline != nil {
-		err := s.h264Pipeline.Close()
-		s.h264Pipeline = nil
-		return err
+	s.cfgMu.Lock()
+	pipeline := s.h264Pipeline
+	s.h264Pipeline = nil
+	s.cfgMu.Unlock()
+	if pipeline != nil {
+		return pipeline.Close()
 	}
 	return nil
 }
