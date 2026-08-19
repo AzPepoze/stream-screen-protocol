@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	videoh264 "streamscreen/internal/video/codec/h264"
 	"streamscreen/internal/video/stream"
@@ -45,13 +46,13 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 		return nil
 	}
 
-	s.frameSeq++
+	frameSeq := atomic.AddUint32(&s.frameSeq, 1)
 	timestamp := stream.NowTimestampMS()
-	totalPackets := uint32((len(encodedData) + stream.CSPMaxPayloadSize - 1) / stream.CSPMaxPayloadSize)
+	totalPackets := uint32((len(encodedData) + stream.CSPMediaPayloadSize - 1) / stream.CSPMediaPayloadSize)
 	packets := make([][]byte, 0, totalPackets)
 	for packetID := uint32(0); packetID < totalPackets; packetID++ {
-		start := packetID * stream.CSPMaxPayloadSize
-		end := start + stream.CSPMaxPayloadSize
+		start := packetID * stream.CSPMediaPayloadSize
+		end := start + stream.CSPMediaPayloadSize
 		if end > uint32(len(encodedData)) {
 			end = uint32(len(encodedData))
 		}
@@ -59,7 +60,7 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 		header := stream.PacketHeader{
 			Version:      stream.CSPVersion,
 			PacketType:   stream.CSPPacketTypeData,
-			FrameSeq:     s.frameSeq,
+			FrameSeq:     frameSeq,
 			PacketID:     packetID,
 			TotalPackets: totalPackets,
 			Timestamp:    timestamp,
@@ -67,11 +68,11 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 		buf := make([]byte, stream.CSPHeaderSize+len(payload))
 		header.Marshal(buf[:stream.CSPHeaderSize])
 		copy(buf[stream.CSPHeaderSize:], payload)
-		s.buffer.Put(s.frameSeq, packetID, buf)
+		s.buffer.Put(frameSeq, packetID, buf)
 		packets = append(packets, buf)
 	}
 
-	s.broadcastVideoBatch(packets, s.frameSeq)
+	s.broadcastVideoBatch(packets, frameSeq)
 	return nil
 }
 
