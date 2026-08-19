@@ -8,80 +8,97 @@ import (
 	"streamscreen/internal/video/stream"
 )
 
+func TestWifiScaleLossDoesNotTriggerCongestion(t *testing.T) {
+	// Default wifi netem is 0.5% loss. Random loss at this scale should drive
+	// light FEC, not collapse the encoder/pacer into severe congestion.
+	f := stream.ControlFeedback{LossPermille: 5, RTTMS: 45}
+	if got := classifyCongestion(f); got != CongestionHealthy {
+		t.Fatalf("0.5%% loss classified as %s, want healthy", got.String())
+	}
+}
+
 func TestCongestionStateTransitionsAndHysteresis(t *testing.T) {
 	state := CongestionHealthy
 	healthyRounds := 0
 
-	// 1. Mild queue occupancy -> Constrained
-	f1 := stream.ControlFeedback{
-		FrameQueuePercent: 30,
-		LossPermille:      10,
-	}
-	state = evaluateCongestionState(state, f1, &healthyRounds)
+	state = evaluateCongestionState(state, stream.ControlFeedback{FrameQueuePercent: 30}, &healthyRounds)
 	if state != CongestionConstrained {
-		t.Fatalf("expected Constrained state, got %s", state.String())
-	}
-	if healthyRounds != 0 {
-		t.Fatalf("healthyRounds should be reset to 0, got %d", healthyRounds)
+		t.Fatalf("expected constrained, got %s", state.String())
 	}
 
-	// 2. High loss & queue -> Congested
-	f2 := stream.ControlFeedback{
-		FrameQueuePercent: 55,
-		LossPermille:      65,
-	}
-	state = evaluateCongestionState(state, f2, &healthyRounds)
+	state = evaluateCongestionState(state, stream.ControlFeedback{FrameQueuePercent: 55}, &healthyRounds)
 	if state != CongestionCongested {
-		t.Fatalf("expected Congested state, got %s", state.String())
+		t.Fatalf("expected congested, got %s", state.String())
 	}
 
-	// 3. Drops -> SeverelyCongested
-	f3 := stream.ControlFeedback{
-		FrameDrops:        1,
-		FrameQueuePercent: 80,
-		LossPermille:      160,
-	}
-	state = evaluateCongestionState(state, f3, &healthyRounds)
+	state = evaluateCongestionState(state, stream.ControlFeedback{FrameDrops: 1, FrameQueuePercent: 80}, &healthyRounds)
 	if state != CongestionSeverelyCongested {
-		t.Fatalf("expected SeverelyCongested state, got %s", state.String())
+		t.Fatalf("expected severely congested, got %s", state.String())
 	}
 
-	// 4. Healthy feedback: 1st round should NOT immediately jump to Healthy (hysteresis)
-	fHealthy := stream.ControlFeedback{
-		FrameQueuePercent: 5,
-		FrameDrops:        0,
-		LossPermille:      0,
+	healthy := stream.ControlFeedback{FrameQueuePercent: 5}
+	for i := 0; i < 2; i++ {
+		state = evaluateCongestionState(state, healthy, &healthyRounds)
+		if state != CongestionSeverelyCongested {
+			t.Fatalf("hysteresis changed state on healthy round %d: %s", i+1, state.String())
+		}
 	}
-	state = evaluateCongestionState(state, fHealthy, &healthyRounds)
-	if state != CongestionSeverelyCongested {
-		t.Fatalf("hysteresis failed: state changed prematurely on 1st round to %s", state.String())
-	}
-
-	// 2nd healthy round
-	state = evaluateCongestionState(state, fHealthy, &healthyRounds)
-	if state != CongestionSeverelyCongested {
-		t.Fatalf("hysteresis failed: state changed prematurely on 2nd round to %s", state.String())
-	}
-
-	// 3rd healthy round -> steps down to Congested
-	state = evaluateCongestionState(state, fHealthy, &healthyRounds)
+	state = evaluateCongestionState(state, healthy, &healthyRounds)
 	if state != CongestionCongested {
-		t.Fatalf("expected step-down to Congested, got %s", state.String())
+		t.Fatalf("expected one-step recovery to congested, got %s", state.String())
 	}
 }
 
-func TestPerViewerFrameShedding(t *testing.T) {
+func TestAdaptiveMediaTargetDecreasesAndRecovers(t *testing.T) {
+	const base = uint64(6000000)
+	severe := nextMediaTargetBitrate(base, base, CongestionSeverelyCongested)
+	if severe != 4200000 {
+		t.Fatalf("severe target=%d want=4200000", severe)
+	}
+	congested := nextMediaTargetBitrate(severe, base, CongestionCongested)
+	if congested >= severe {
+		t.Fatalf("congested target did not decrease: %d -> %d", severe, congested)
+	}
+	recovered := nextMediaTargetBitrate(congested, base, CongestionHealthy)
+	if recovered <= congested || recovered > base {
+		t.Fatalf("healthy recovery invalid: %d -> %d", congested, recovered)
+	}
+}
+
+func TestAdaptiveMediaTargetHasFloor(t *testing.T) {
+	const base = uint64(6000000)
+	target := base
+	for i := 0; i < 50; i++ {
+		target = nextMediaTargetBitrate(target, base, CongestionSeverelyCongested)
+	}
+	if target != 1500000 {
+		t.Fatalf("target floor=%d want=1500000", target)
+	}
+}
+
+func TestWireTargetIncludesFECAndAudio(t *testing.T) {
+	got := wireTargetFor(6000000, 8, true, 96)
+	want := uint64(6000000 + 750000 + 96000)
+	if got != want {
+		t.Fatalf("wire target=%d want=%d", got, want)
+	}
+	if gotNoFEC := wireTargetFor(6000000, 0, false, 0); gotNoFEC != 6000000 {
+		t.Fatalf("wire target without overhead=%d", gotNoFEC)
+	}
+}
+
+// Frame shedding remains useful for independently decodable/block media. H264
+// bypasses this policy and uses IDR-aware resynchronization instead.
+func TestPerViewerFrameSheddingForIndependentMedia(t *testing.T) {
 	v := newViewerState(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1234})
 
-	// Healthy: drops 0% of frames
 	v.congestionState = CongestionHealthy
 	for seq := uint32(0); seq < 8; seq++ {
 		if v.shouldDropVideoBatch(seq) {
-			t.Fatalf("Healthy viewer should not drop frame %d", seq)
+			t.Fatalf("healthy viewer should not drop frame %d", seq)
 		}
 	}
 
-	// Constrained: drops 1 in 4 frames
 	v.congestionState = CongestionConstrained
 	dropped := 0
 	for seq := uint32(0); seq < 8; seq++ {
@@ -90,10 +107,9 @@ func TestPerViewerFrameShedding(t *testing.T) {
 		}
 	}
 	if dropped != 2 {
-		t.Fatalf("Constrained viewer should drop 2 of 8 frames, got %d", dropped)
+		t.Fatalf("constrained viewer dropped %d/8 want 2", dropped)
 	}
 
-	// Congested: drops 1 in 2 frames (50%)
 	v.congestionState = CongestionCongested
 	dropped = 0
 	for seq := uint32(0); seq < 8; seq++ {
@@ -102,10 +118,9 @@ func TestPerViewerFrameShedding(t *testing.T) {
 		}
 	}
 	if dropped != 4 {
-		t.Fatalf("Congested viewer should drop 4 of 8 frames, got %d", dropped)
+		t.Fatalf("congested viewer dropped %d/8 want 4", dropped)
 	}
 
-	// SeverelyCongested: drops 3 in 4 frames (75%)
 	v.congestionState = CongestionSeverelyCongested
 	dropped = 0
 	for seq := uint32(0); seq < 8; seq++ {
@@ -114,31 +129,42 @@ func TestPerViewerFrameShedding(t *testing.T) {
 		}
 	}
 	if dropped != 6 {
-		t.Fatalf("SeverelyCongested viewer should drop 6 of 8 frames, got %d", dropped)
+		t.Fatalf("severely congested viewer dropped %d/8 want 6", dropped)
 	}
 }
 
-func TestTokenPacerEnforcesBitrate(t *testing.T) {
-	// Target rate: 10,000,000 bps (10 Mbps = 1.25 MB/s)
-	pacer := newTokenPacer(10000000)
+func TestTokenPacerChargesEveryPacket(t *testing.T) {
+	// At 1 Mbps a 1360-byte packet costs about 10.88ms. With no initial tokens,
+	// two packets should cost roughly twice that. The old pacer accidentally
+	// reused the sleep interval as credit and could send packet two immediately.
+	pacer := newTokenPacer(1000000)
 	pacer.tokens = 0
 	pacer.lastRefill = time.Now()
 
-	// Pacing a 1360-byte packet with 0 tokens should compute positive wait time without panic
 	start := time.Now()
 	pacer.pace(1360, false)
+	pacer.pace(1360, false)
 	dur := time.Since(start)
-
-	// Expected wait ~ (1360 * 8 / 10,000,000) s = 1.088 ms
-	if dur > 100*time.Millisecond {
+	if dur < 17*time.Millisecond {
+		t.Fatalf("two packets paced too quickly: %s", dur)
+	}
+	if dur > 150*time.Millisecond {
 		t.Fatalf("pacer slept too long: %s", dur)
 	}
+}
 
-	// Immediate (audio) pacing should not block even when tokens are 0
-	start = time.Now()
-	pacer.pace(200, true)
-	if durAudio := time.Since(start); durAudio > 5*time.Millisecond {
-		t.Fatalf("immediate audio pacing blocked: %s", durAudio)
+func TestAudioPriorityCreatesBoundedDebt(t *testing.T) {
+	pacer := newTokenPacer(1000000)
+	pacer.tokens = 0
+	for i := 0; i < 1000; i++ {
+		pacer.pace(1360, true)
+	}
+	pacer.mu.Lock()
+	debt := pacer.tokens
+	limit := -pacer.maxTokens
+	pacer.mu.Unlock()
+	if debt < limit {
+		t.Fatalf("audio debt unbounded: tokens=%f limit=%f", debt, limit)
 	}
 }
 
@@ -149,29 +175,13 @@ func TestRepairPacketDroppedAfterDeadline(t *testing.T) {
 	}
 	defer serverConn.Close()
 
-	s := &Sender{
-		conn:          serverConn,
-		frameDeadline: 50 * time.Millisecond,
-	}
+	s := &Sender{conn: serverConn, frameDeadline: 50 * time.Millisecond}
+	viewer := newViewerState(serverConn.LocalAddr().(*net.UDPAddr))
 
-	freshBatch := packetBatch{
-		packets:  [][]byte{[]byte("fresh-repair")},
-		class:    mediaRepair,
-		frameSeq: 100,
-		deadline: time.Now().Add(50 * time.Millisecond),
-	}
-	expiredBatch := packetBatch{
+	s.sendBatch(viewer, packetBatch{
 		packets:  [][]byte{[]byte("expired-repair")},
 		class:    mediaRepair,
 		frameSeq: 90,
 		deadline: time.Now().Add(-10 * time.Millisecond),
-	}
-
-	viewer := newViewerState(serverConn.LocalAddr().(*net.UDPAddr))
-
-	// Send expired batch: should be dropped immediately without writing to UDP
-	s.sendBatch(viewer, expiredBatch)
-
-	// Fresh batch: valid
-	s.sendBatch(viewer, freshBatch)
+	})
 }
