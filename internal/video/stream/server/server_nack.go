@@ -1,10 +1,10 @@
 package server
 
 import (
-	"streamscreen/internal/logger"
 	"net"
 	"time"
 
+	"streamscreen/internal/logger"
 	"streamscreen/internal/video/stream"
 )
 
@@ -19,7 +19,6 @@ func (s *Sender) listenForNACKs() {
 			if err != nil {
 				continue
 			}
-
 			if n < stream.CSPHeaderSize {
 				continue
 			}
@@ -31,92 +30,118 @@ func (s *Sender) listenForNACKs() {
 
 			switch h.PacketType {
 			case stream.CSPPacketTypeJoin:
-				logger.Info("Server: received JOIN from %s", addr.String())
-				if reported, err := stream.UnmarshalJoin(buf[:n]); err == nil && reported != "" {
-					if parsed, err2 := net.ResolveUDPAddr("udp", reported); err2 == nil {
-						s.setDestinationAndSeen(parsed)
-						logger.Info("Server: using reported endpoint %s (observed %s)", parsed.String(), addr.String())
-					} else {
-						s.setDestinationAndSeen(addr)
-						logger.Info("Server: reported endpoint parse failed (%v), using observed %s", err2, addr.String())
-					}
-				} else {
-					s.setDestinationAndSeen(addr)
-					logger.Info("Server: join payload empty, using observed %s", addr.String())
-				}
-				// Send video info to client only if needed (throttle to every 5 seconds)
-				if time.Since(s.lastVideoInfoSent) > 5*time.Second {
-					var gridSize int
-					if v, ok := s.cfg.Capture.RGBACodecConfig["tile_size"]; ok {
-						if val, ok := v.(int); ok {
-							gridSize = val
-						} else if val, ok := v.(float64); ok {
-							gridSize = int(val)
-						}
-					}
-					if gridSize == 0 {
-						gridSize = 10
-					}
-					videoInfoPacket := stream.MarshalVideoInfo(uint32(s.cfg.Capture.Width), uint32(s.cfg.Capture.Height), uint32(s.cfg.Capture.FPS), uint32(gridSize), s.codecName)
-					if _, err := s.conn.WriteToUDP(videoInfoPacket, addr); err != nil {
-						logger.Info("Server: failed to send VideoInfo to %s: %v (width=%d, height=%d, fps=%d, gridSize=%d, codec=%s)", addr.String(), err, s.cfg.Capture.Width, s.cfg.Capture.Height, s.cfg.Capture.FPS, gridSize, s.codecName)
-					} else {
-						logger.Info("Server: sent VideoInfo to %s (width=%d, height=%d, fps=%d, gridSize=%d, codec=%s)", addr.String(), s.cfg.Capture.Width, s.cfg.Capture.Height, s.cfg.Capture.FPS, gridSize, s.codecName)
-						s.lastVideoInfoSent = time.Now()
-					}
-				}
-				if s.cfg.Audio.Enabled && time.Since(s.lastAudioInfoSent) > 5*time.Second {
-					audioInfoPacket := stream.MarshalAudioInfo(
-						uint32(s.cfg.Audio.SampleRate),
-						uint32(s.cfg.Audio.Channels),
-						uint32(s.cfg.Audio.FrameMS),
-						uint32(s.cfg.Audio.BitrateKbps),
-						s.cfg.Audio.Codec,
-					)
-					if _, err := s.conn.WriteToUDP(audioInfoPacket, addr); err != nil {
-						logger.Info("Server: failed to send AudioInfo to %s: %v", addr.String(), err)
-					} else {
-						logger.Info("Server: sent AudioInfo to %s (codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps)",
-							addr.String(), s.cfg.Audio.Codec, s.cfg.Audio.SampleRate, s.cfg.Audio.Channels, s.cfg.Audio.FrameMS, s.cfg.Audio.BitrateKbps)
-						s.lastAudioInfoSent = time.Now()
-					}
-				}
-			case stream.CSPPacketTypeNACK:
-				s.setDestinationAndSeen(addr)
-				logger.Info("Server: received NACK from %s", addr.String())
-			case stream.CSPPacketTypeTileReq:
-				s.setDestinationAndSeen(addr)
-				tileIDs, err := stream.UnmarshalTileRequest(buf[:n])
-				if err == nil {
-					logger.Info("Server: received TileRequest from %s for %d tiles", addr.String(), len(tileIDs))
-					if s.tileBuffer != nil {
-						s.tileBuffer.SetRequestedTiles(tileIDs)
-					}
-				} else {
-					logger.Info("Server: failed to parse TileRequest: %v", err)
-				}
-			case stream.CSPPacketTypeControl:
-				s.setDestinationAndSeen(addr)
-				feedback, err := stream.UnmarshalControlFeedback(buf[:n])
-				if err != nil {
-					logger.Info("Server: failed to parse control feedback from %s: %v", addr.String(), err)
-					continue
-				}
-				s.applyControlFeedback(feedback)
-			}
+				target := s.resolveJoinEndpoint(addr, buf[:n])
+				s.registerViewer(target)
+				s.sendSessionInfo(target)
+				logger.Info("[server] viewer joined %s active=%d", target.String(), s.viewerCount())
 
-			if h.PacketType == stream.CSPPacketTypeNACK {
+			case stream.CSPPacketTypeNACK:
+				s.touchViewer(addr)
 				frameSeq, ids, err := stream.UnmarshalNACK(buf[:n])
 				if err != nil {
 					continue
 				}
-
+				repair := make([][]byte, 0, len(ids))
 				for _, id := range ids {
-					if packet := s.buffer.Get(frameSeq, id); packet != nil {
-						_, _ = s.conn.WriteToUDP(packet, addr)
+					packet := s.buffer.Get(frameSeq, id)
+					if packet == nil || !s.packetBeforeDeadline(packet) {
+						continue
 					}
+					repair = append(repair, packet)
 				}
+				if len(repair) > 0 {
+					s.enqueueRepair(addr, repair, frameSeq)
+				}
+
+			case stream.CSPPacketTypeTileReq:
+				s.touchViewer(addr)
+				tileIDs, err := stream.UnmarshalTileRequest(buf[:n])
+				if err != nil || s.blockyPipeline == nil {
+					continue
+				}
+				packets, err := s.blockyPipeline.BuildTilesBatch(s.frameSeq, tileIDs, stream.NowTimestampMS())
+				if err == nil && len(packets) > 0 {
+					s.enqueueRepair(addr, packets, s.frameSeq)
+				}
+
+			case stream.CSPPacketTypeControl:
+				feedback, err := stream.UnmarshalExtendedControlFeedback(buf[:n])
+				if err != nil {
+					logger.Info("[server] invalid control feedback from %s: %v", addr.String(), err)
+					continue
+				}
+				s.applyControlFeedback(addr, feedback)
+
+			case stream.CSPPacketTypeProbe:
+				s.touchViewer(addr)
+				_, _ = s.conn.WriteToUDP(stream.MarshalProbeReply(h.FrameSeq, h.Timestamp), addr)
 			}
 		}
 	}
+}
+
+func (s *Sender) resolveJoinEndpoint(observed *net.UDPAddr, packet []byte) *net.UDPAddr {
+	reported, err := stream.UnmarshalJoin(packet)
+	if err != nil || reported == "" {
+		return observed
+	}
+	parsed, err := net.ResolveUDPAddr("udp", reported)
+	if err != nil {
+		return observed
+	}
+	// A reported endpoint is only trusted when it refers to the same observed
+	// IP. This avoids accidentally replacing a NAT-mapped address with an
+	// unrelated endpoint while retaining the existing explicit-port feature.
+	if !parsed.IP.Equal(observed.IP) {
+		return observed
+	}
+	return parsed
+}
+
+func (s *Sender) sendSessionInfo(addr *net.UDPAddr) {
+	if addr == nil {
+		return
+	}
+	gridSize := 10
+	if v, ok := s.cfg.Capture.RGBACodecConfig["tile_size"]; ok {
+		if val, ok := v.(int); ok {
+			gridSize = val
+		} else if val, ok := v.(float64); ok {
+			gridSize = int(val)
+		}
+	}
+	videoInfo := stream.MarshalVideoInfo(
+		uint32(s.cfg.Capture.Width),
+		uint32(s.cfg.Capture.Height),
+		uint32(s.cfg.Capture.FPS),
+		uint32(gridSize),
+		s.codecName,
+	)
+	_, _ = s.conn.WriteToUDP(videoInfo, addr)
+
+	if s.cfg.Audio.Enabled {
+		audioInfo := stream.MarshalAudioInfo(
+			uint32(s.cfg.Audio.SampleRate),
+			uint32(s.cfg.Audio.Channels),
+			uint32(s.cfg.Audio.FrameMS),
+			uint32(s.cfg.Audio.BitrateKbps),
+			s.cfg.Audio.Codec,
+		)
+		_, _ = s.conn.WriteToUDP(audioInfo, addr)
+	}
+}
+
+func (s *Sender) packetBeforeDeadline(packet []byte) bool {
+	if len(packet) < stream.CSPHeaderSize {
+		return false
+	}
+	var h stream.PacketHeader
+	if err := h.Unmarshal(packet[:stream.CSPHeaderSize]); err != nil {
+		return false
+	}
+	if h.Timestamp == 0 {
+		return true
+	}
+	age := time.Duration(stream.TimestampAgeMS(h.Timestamp)) * time.Millisecond
+	return age <= s.frameDeadline
 }
