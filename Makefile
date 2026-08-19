@@ -13,11 +13,14 @@ SERVER_BIN_LINUX := $(BIN_DIR)/server-linux
 CLIENT_BIN_LINUX := $(BIN_DIR)/client-linux
 SERVER_BIN_WINDOWS := $(BIN_DIR)/server-windows.exe
 CLIENT_BIN_WINDOWS := $(BIN_DIR)/client-windows.exe
+NETEM_COMPOSE := docker compose -f tests/netem/compose.yml
+NETEM_SMOKE_COMPOSE := docker compose -f tests/netem/compose.yml -f tests/netem/compose.smoke.yml
 
 .PHONY: build build-server build-client run-server run-client test clean
 .PHONY: all build build-server build-client run-server run-client test clean
 .PHONY: build-linux build-windows build-windows-static check-windows-static-env
 .PHONY: build\:linux build\:windows
+.PHONY: netem-up netem-down netem-logs netem-server netem-client-a netem-client-b test-netem
 
 all: build test
 
@@ -69,6 +72,30 @@ run-client: build-client
 
 test:
 	$(GO) test -tags "$(OPUS_TAGS)" ./...
+
+netem-up:
+	$(NETEM_COMPOSE) up -d --build
+
+netem-down:
+	$(NETEM_COMPOSE) down --remove-orphans
+
+netem-logs:
+	$(NETEM_COMPOSE) logs -f --no-color
+
+netem-server: build-server
+	$(SERVER_BIN) -config server.config.json
+
+netem-client-a: build-client
+	cd tests/netem/client-a && ../../../$(CLIENT_BIN)
+
+netem-client-b: build-client
+	cd tests/netem/client-b && ../../../$(CLIENT_BIN)
+
+test-netem:
+	@set -e; \
+	$(NETEM_SMOKE_COMPOSE) up -d --build; \
+	trap '$(NETEM_SMOKE_COMPOSE) down --remove-orphans' EXIT; \
+	python3 tests/netem/smoke.py
 
 clean:
 	rm -rf $(BIN_DIR)
