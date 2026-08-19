@@ -67,11 +67,8 @@ func TestAppendFUA(t *testing.T) {
 	}
 }
 
-func TestPersistentFFmpegSessionEncodesMultipleFrames(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not installed")
-	}
-
+func newTestEncoder(t *testing.T) *Session {
+	t.Helper()
 	const width, height = 64, 64
 	session, err := New(Config{
 		Codec:       "libx264",
@@ -90,19 +87,42 @@ func TestPersistentFFmpegSessionEncodesMultipleFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return session
+}
+
+func testFrames() ([]byte, []byte) {
+	const width, height = 64, 64
+	first := make([]byte, width*height*4)
+	second := make([]byte, width*height*4)
+	for i := 0; i < len(first); i += 4 {
+		first[i] = 0x10
+		first[i+1] = 0x20
+		first[i+2] = 0x30
+		first[i+3] = 0xff
+
+		second[i] = 0xc0
+		second[i+1] = 0x40
+		second[i+2] = 0x20
+		second[i+3] = 0xff
+	}
+	return first, second
+}
+
+func TestPersistentFFmpegSessionEncodesMultipleFrames(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+
+	session := newTestEncoder(t)
 	defer session.Close()
 	pid := session.cmd.Process.Pid
+	firstFrame, secondFrame := testFrames()
 
-	frame := make([]byte, width*height*4)
-	for i := 3; i < len(frame); i += 4 {
-		frame[i] = 0xff
-	}
-	first, err := session.Encode(frame)
+	first, err := session.Encode(firstFrame)
 	if err != nil {
 		t.Fatal(err)
 	}
-	frame[0] = 0xff
-	second, err := session.Encode(frame)
+	second, err := session.Encode(secondFrame)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +131,43 @@ func TestPersistentFFmpegSessionEncodesMultipleFrames(t *testing.T) {
 	}
 	if !bytes.Contains(first, annexBStartCode) || !bytes.Contains(second, annexBStartCode) {
 		t.Fatalf("expected Annex-B H264 output: first=%d bytes second=%d bytes", len(first), len(second))
+	}
+}
+
+func TestPersistentFFmpegEncodeDecodeMultipleFrames(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	const width, height = 64, 64
+
+	encoder := newTestEncoder(t)
+	defer encoder.Close()
+	decoder := NewDecoder()
+	defer decoder.Close()
+	firstFrame, secondFrame := testFrames()
+
+	firstAU, err := encoder.Encode(firstFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedFirst, err := decoder.Decode(firstAU, width, height)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAU, err := encoder.Encode(secondFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedSecond, err := decoder.Decode(secondAU, width, height)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantSize := width * height * 4
+	if len(decodedFirst) != wantSize || len(decodedSecond) != wantSize {
+		t.Fatalf("decoded sizes first=%d second=%d want=%d", len(decodedFirst), len(decodedSecond), wantSize)
+	}
+	if bytes.Equal(decodedFirst, decodedSecond) {
+		t.Fatal("two visually different source frames decoded to identical RGBA output")
 	}
 }
