@@ -105,7 +105,7 @@ func UnmarshalExtendedControlFeedback(buf []byte) (ExtendedControlFeedback, erro
 		},
 		RTTMS:            binary.BigEndian.Uint16(buf[CSPHeaderSize+16 : CSPHeaderSize+18]),
 		JitterMS:         binary.BigEndian.Uint16(buf[CSPHeaderSize+18 : CSPHeaderSize+20]),
-		LossPermille:     binary.BigEndian.Uint16(buf[CSPHeaderSize+20 : CSPHeaderHeaderSize+22]),
+		LossPermille:     binary.BigEndian.Uint16(buf[CSPHeaderSize+20 : CSPHeaderSize+22]),
 		DeliveryRateKbps: binary.BigEndian.Uint32(buf[CSPHeaderSize+24 : CSPHeaderSize+28]),
 	}, nil
 }
