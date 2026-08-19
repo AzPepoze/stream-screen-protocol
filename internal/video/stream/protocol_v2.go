@@ -97,22 +97,24 @@ func UnmarshalExtendedControlFeedback(buf []byte) (ExtendedControlFeedback, erro
 
 func MarshalProbe(nonce, sentAt uint32) []byte {
 	buf := make([]byte, CSPHeaderSize)
-	PacketHeader{
+	h := PacketHeader{
 		Version:    CSPVersion,
 		PacketType: CSPPacketTypeProbe,
 		FrameSeq:   nonce,
 		Timestamp:  sentAt,
-	}.Marshal(buf)
+	}
+	h.Marshal(buf)
 	return buf
 }
 
 func MarshalProbeReply(nonce, sentAt uint32) []byte {
 	buf := make([]byte, CSPHeaderSize)
-	PacketHeader{
+	h := PacketHeader{
 		Version:    CSPVersion,
 		PacketType: CSPPacketTypeProbeReply,
 		FrameSeq:   nonce,
 		Timestamp:  sentAt,
-	}.Marshal(buf)
+	}
+	h.Marshal(buf)
 	return buf
 }
