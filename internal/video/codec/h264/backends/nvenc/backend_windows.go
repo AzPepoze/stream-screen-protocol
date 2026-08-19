@@ -45,7 +45,7 @@ func (e *Encoder) ensureSession(width, height int) error {
 	}
 	session, err := rtpffmpeg.New(rtpffmpeg.Config{
 		Codec:       "h264_nvenc",
-		InputFormat: "rgba",
+		InputFormat: "bgra",
 		FPS:         e.fps,
 		Width:       width,
 		Height:      height,
@@ -74,7 +74,7 @@ func (e *Encoder) Encode(rgbaData []byte, width, height int) ([]byte, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if len(rgbaData) != width*height*4 {
-		return nil, fmt.Errorf("nvenc encoder: invalid RGBA frame size got=%d expected=%d", len(rgbaData), width*height*4)
+		return nil, fmt.Errorf("nvenc encoder: invalid frame size got=%d expected=%d", len(rgbaData), width*height*4)
 	}
 	if err := e.ensureSession(width, height); err != nil {
 		return nil, fmt.Errorf("nvenc encoder: persistent session: %w", err)
