@@ -85,6 +85,8 @@ func (s *Session) start() error {
 	args = append(args, s.cfg.ExtraArgs...)
 	args = append(args,
 		"-flush_packets", "1",
+		"-muxdelay", "0",
+		"-muxpreload", "0",
 		"-f", "rtp",
 		"-payload_type", "96",
 		fmt.Sprintf("rtp://127.0.0.1:%d?pkt_size=1200", port),
@@ -137,6 +139,9 @@ func (s *Session) start() error {
 
 // Encode writes exactly one raw frame into the long-lived encoder and waits
 // for the RTP marker that terminates the corresponding H.264 access unit.
+// The timeout is only a failure guard. It is intentionally not the media
+// latency budget: starting FFmpeg/NVENC may take hundreds of milliseconds on
+// the first frame, while subsequent frames reuse the same initialized session.
 func (s *Session) Encode(frame []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,14 +158,7 @@ func (s *Session) Encode(frame []byte) ([]byte, error) {
 		return nil, fmt.Errorf("rtpffmpeg: write raw frame: %w", err)
 	}
 
-	timeout := 2 * time.Second
-	if s.cfg.FPS > 0 {
-		frameBudget := 12 * time.Second / time.Duration(s.cfg.FPS)
-		if frameBudget > 250*time.Millisecond && frameBudget < timeout {
-			timeout = frameBudget
-		}
-	}
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
 
 	select {
@@ -172,7 +170,7 @@ func (s *Session) Encode(frame []byte) ([]byte, error) {
 	case err := <-s.errCh:
 		return nil, err
 	case <-timer.C:
-		return nil, fmt.Errorf("rtpffmpeg: timed out waiting for encoded frame after %s", timeout)
+		return nil, errors.New("rtpffmpeg: timed out waiting for encoded frame after 2s")
 	case <-s.done:
 		return nil, errors.New("rtpffmpeg: encoder closed")
 	}
@@ -222,8 +220,7 @@ func (s *Session) readRTP() {
 			continue
 		}
 
-		headerLen, marker, timestamp, payload, ok := parseRTPPacket(buf[:n])
-		_ = headerLen
+		_, marker, timestamp, payload, ok := parseRTPPacket(buf[:n])
 		if !ok || len(payload) == 0 {
 			continue
 		}
@@ -264,7 +261,7 @@ func parseRTPPacket(packet []byte) (headerLen int, marker bool, timestamp uint32
 	if len(packet) < headerLen {
 		return 0, false, 0, nil, false
 	}
-	if packet[0]&0x10 != 0 { // RTP header extension
+	if packet[0]&0x10 != 0 {
 		if len(packet) < headerLen+4 {
 			return 0, false, 0, nil, false
 		}
@@ -275,7 +272,7 @@ func parseRTPPacket(packet []byte) (headerLen int, marker bool, timestamp uint32
 		}
 	}
 	end := len(packet)
-	if packet[0]&0x20 != 0 { // padding
+	if packet[0]&0x20 != 0 {
 		pad := int(packet[len(packet)-1])
 		if pad == 0 || pad > end-headerLen {
 			return 0, false, 0, nil, false
@@ -299,7 +296,7 @@ func appendH264RTPPayload(dst, payload []byte) ([]byte, error) {
 		dst = append(dst, annexBStartCode...)
 		dst = append(dst, payload...)
 		return dst, nil
-	case nalType == 24: // STAP-A
+	case nalType == 24:
 		pos := 1
 		for pos+2 <= len(payload) {
 			n := int(binary.BigEndian.Uint16(payload[pos : pos+2]))
@@ -315,14 +312,13 @@ func appendH264RTPPayload(dst, payload []byte) ([]byte, error) {
 			return dst, errors.New("truncated STAP-A payload")
 		}
 		return dst, nil
-	case nalType == 28: // FU-A
+	case nalType == 28:
 		if len(payload) < 2 {
 			return dst, errors.New("truncated FU-A payload")
 		}
 		indicator := payload[0]
 		fuHeader := payload[1]
-		start := fuHeader&0x80 != 0
-		if start {
+		if fuHeader&0x80 != 0 {
 			reconstructedNAL := (indicator & 0xe0) | (fuHeader & 0x1f)
 			dst = append(dst, annexBStartCode...)
 			dst = append(dst, reconstructedNAL)
