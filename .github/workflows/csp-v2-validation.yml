@@ -1,0 +1,35 @@
+name: CSP v2 validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install media build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libopus-dev
+      - name: Run tests
+        run: go test -tags nolibopusfile ./...
+      - name: Build Linux
+        run: make build-linux
+
+  build-windows:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cross-build Windows
+        run: make build-windows
