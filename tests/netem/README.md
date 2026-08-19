@@ -1,28 +1,22 @@
 # Docker netem relay lab
 
-This lab is for testing the **real CSP server and real CSP clients on your machine** while Docker sits only in the middle as a network emulator.
+This lab is for testing the **real CSP server and real CSP client on your machine** while Docker sits in the middle as a network emulator.
 
 Runtime topology:
 
 ```mermaid
-flowchart TD
-    S[Real CSP server on host :7700]
-
-    S --> RA[Docker relay A :5001]
-    RA --> A[Real client A]
-
-    S --> RB[Docker relay B :5002]
-    RB --> B[Real client B]
-
-    A --> RA --> S
-    B --> RB --> S
+flowchart LR
+    C[Real CSP client :5000] -->|UDP| R[Docker netem relay :5000]
+    R -->|UDP with netem impairment| S[Real CSP server on host :7700]
+    S -->|UDP| R
+    R -->|UDP with netem impairment| C
 ```
 
 Docker does **not** run the CSP server or CSP client in normal use. It only forwards UDP and applies Linux `tc netem` so the packets experience configured delay, jitter, loss, duplication, or rate limiting.
 
 ## Quick local test
 
-Open four terminals from the repository root.
+Open three terminals from the repository root.
 
 ### 1. Start the real CSP server
 
@@ -30,102 +24,80 @@ Open four terminals from the repository root.
 make netem-server
 ```
 
-The normal `server.config.json` should bind the server to `0.0.0.0:7700` so the Docker containers can reach it through `host.docker.internal`.
+The normal `server.config.json` binds the server to `0.0.0.0:7700` so the Docker container reaches it through `host.docker.internal`.
 
-### 2. Start both Docker relays
+### 2. Start the Docker relay
 
 ```bash
 make netem-up
 ```
 
-By default this creates:
+By default this starts the relay with the **Standard Wi-Fi** preset (`20ms ± 2ms, 0.5% loss`).
 
-```text
-127.0.0.1:5001 -> relay A -> host.docker.internal:7700
-127.0.0.1:5002 -> relay B -> host.docker.internal:7700
-```
-
-Default profiles:
-
-| Path | Delay | Jitter | Loss |
-| --- | ---: | ---: | ---: |
-| relay A / client A | 20 ms | 2 ms | 0.5% |
-| relay B / client B | 100 ms | 15 ms | 8% |
-
-### 3. Start real client A
+To choose another preset, specify `NETEM_PRESET`:
 
 ```bash
-make netem-client-a
+NETEM_PRESET=mobile make netem-up
 ```
 
-This runs the normal client binary from `tests/netem/client-a`, whose `client.config.json` points at `127.0.0.1:5001`.
-
-### 4. Start real client B
+### 3. Start the real client
 
 ```bash
-make netem-client-b
+make netem-client
 ```
 
-This runs the same normal client binary from `tests/netem/client-b`, whose config points at `127.0.0.1:5002`.
+This runs the client binary from `tests/netem/client`, whose `client.config.json` points at `127.0.0.1:5000`.
 
-You now have the same real server stream going through two different simulated network paths at the same time.
+## Built-in Presets
 
-## What is actually impaired?
+| Preset | `NETEM_PRESET` Value | Delay & Jitter | Packet Loss | Rate Limit | Simulated Condition |
+|---|---|---|---|---|---|
+| **LAN / Transparent** | `lan` | 0 ms | 0% | Unlimited | Perfect connection / direct LAN |
+| **Fast Broadband** | `broadband` | 10 ms ± 1 ms | 0.1% | Unlimited | Low-latency fiber or high-speed broadband |
+| **Standard Wi-Fi** *(Default)* | `wifi` | 20 ms ± 2 ms | 0.5% | Unlimited | Typical residential Wi-Fi |
+| **Mobile 4G/5G** | `mobile` | 80 ms ± 15 ms | 3.0% | Unlimited | Cellular mobile data |
+| **Degraded / Bad Network** | `bad` | 150 ms ± 30 ms | 8.0% | Unlimited | Poor reception, congested Wi-Fi / LTE |
+| **Extreme Stress Test** | `extreme` | 250 ms ± 50 ms | 15.0% | 10 Mbps | Severe packet loss, jitter & bandwidth constraint |
+| **Custom Variables** | `custom` | *from env* | *from env* | *from env* | Custom variables defined below |
 
-The relay is bidirectional. Both directions pass through the container:
-
-```mermaid
-flowchart TD
-    C[Client]
-    -->|JOIN / NACK / feedback / probe| R[Docker netem relay]
-    --> S[Server]
-
-    S -->|video / audio / metadata / retransmit| R
-    --> C
-```
-
-That means the test affects CSP media and the feedback/recovery traffic used by congestion control, FEC, NACK, RTT probes, and retransmission logic.
-
-`tc netem` is attached to the relay container egress interface, so a round trip crosses the configured impairment once in each direction.
-
-## Change the network profiles
-
-All runtime settings can be overridden with environment variables:
+### Example Preset Commands
 
 ```bash
-RELAY_A_DELAY=5ms \
-RELAY_A_JITTER=1ms \
-RELAY_A_LOSS=0.1% \
-RELAY_B_DELAY=150ms \
-RELAY_B_JITTER=30ms \
-RELAY_B_LOSS=12% \
+# Run with mobile connection simulation:
+NETEM_PRESET=mobile make netem-up
+
+# Run with severe loss & delay:
+NETEM_PRESET=bad make netem-up
+
+# Run with extreme stress test:
+NETEM_PRESET=extreme make netem-up
+```
+
+## Custom Environment Settings
+
+To configure custom network parameters, set `NETEM_PRESET=custom`:
+
+```bash
+NETEM_PRESET=custom \
+NETEM_DELAY=100ms \
+NETEM_JITTER=15ms \
+NETEM_LOSS=8% \
 make netem-up
 ```
 
-Available settings:
+Available environment variables:
 
-| Variable | Default |
-| --- | --- |
-| `TARGET_ADDR` | `host.docker.internal:7700` |
-| `RELAY_A_PORT` | `5001` |
-| `RELAY_B_PORT` | `5002` |
-| `RELAY_A_DELAY` | `20ms` |
-| `RELAY_A_JITTER` | `2ms` |
-| `RELAY_A_LOSS` | `0.5%` |
-| `RELAY_A_DUPLICATE` | `0%` |
-| `RELAY_A_RATE` | unlimited |
-| `RELAY_B_DELAY` | `100ms` |
-| `RELAY_B_JITTER` | `15ms` |
-| `RELAY_B_LOSS` | `8%` |
-| `RELAY_B_DUPLICATE` | `0%` |
-| `RELAY_B_RATE` | unlimited |
-| `IDLE_TIMEOUT` | `2m` |
-
-For example, to test against another CSP server on your LAN:
-
-```bash
-TARGET_ADDR=192.168.1.50:7700 make netem-up
-```
+| Variable | Default | Description |
+| --- | --- | --- |
+| `NETEM_PRESET` | `wifi` | Built-in preset (`wifi`, `lan`, `broadband`, `mobile`, `bad`, `extreme`, `custom`) |
+| `TARGET_ADDR` | `host.docker.internal:7700` | Target server address |
+| `RELAY_PORT` | `5000` | Host UDP port mapped to relay |
+| `NETEM_DELAY` | `20ms` | Network latency |
+| `NETEM_JITTER` | `2ms` | Latency jitter |
+| `NETEM_LOSS` | `0.5%` | Packet loss percentage |
+| `NETEM_DUPLICATE` | `0%` | Packet duplication percentage |
+| `NETEM_RATE` | unlimited | Bandwidth rate limit (e.g. `10mbit`) |
+| `IDLE_TIMEOUT` | `2m` | Client session idle timeout |
 
 ## Inspect and stop
 
@@ -135,7 +107,7 @@ Follow relay logs:
 make netem-logs
 ```
 
-Stop the relay containers:
+Stop the relay container:
 
 ```bash
 make netem-down
@@ -143,16 +115,8 @@ make netem-down
 
 ## Relay implementation smoke test
 
-The normal runtime Compose file contains only relay A and relay B.
-
-For CI and `make test-netem`, `compose.smoke.yml` adds a tiny **CI-only UDP echo target**. It exists only to verify that host packets really traverse the published Docker port, relay, `tc netem`, target, and return path. It is not used when testing CSP locally.
+For CI and `make test-netem`, `compose.smoke.yml` sets `NETEM_PRESET=custom` and adds a UDP echo target to test the relay pipeline non-interactively.
 
 ```bash
 make test-netem
 ```
-
-The stable CI profiles use relay A at `10ms / 0% loss` and relay B at `100ms / 12% loss`, then assert that relay B has materially higher RTT and packet loss.
-
-## Relationship to PR #1
-
-This PR is stacked on PR #1 because the two-client local test is intended to exercise PR #1's multi-viewer server, per-viewer congestion/recovery state, FEC, and deadline-aware transport under two different network conditions.

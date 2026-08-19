@@ -21,9 +21,8 @@ const (
 )
 
 type ServerConfig struct {
-	BindHost   string `json:"bind_host"`
-	ClientHost string `json:"client_host"`
-	Port       int    `json:"port"`
+	BindHost string `json:"bind_host"`
+	Port     int    `json:"port"`
 	Capture    struct {
 		Backend         CaptureBackend         `json:"backend"`
 		FPS             int                    `json:"fps"`
@@ -256,16 +255,6 @@ func (c ServerConfig) EffectiveBackend() (CaptureBackend, error) {
 	default:
 		return "", fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
 	}
-}
-
-func (c ServerConfig) DestinationHost() (string, error) {
-	if c.ClientHost != "" {
-		return c.ClientHost, nil
-	}
-	if c.BindHost != "0.0.0.0" && c.BindHost != "::" {
-		return c.BindHost, nil
-	}
-	return "", errors.New("client_host is required when bind_host is wildcard")
 }
 
 func load(path string, out any) error {

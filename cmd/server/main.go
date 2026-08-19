@@ -35,19 +35,14 @@ func main() {
 		logger.Error("%v", err)
 	}
 
-	destinationHost, err := cfg.DestinationHost()
-	if err != nil {
-		logger.Error("%v", err)
-	}
-
 	logger.Info("loaded %s", cfgPath)
 	logger.Info("backend=%s", backend)
-	logger.Info("bind=%s:%d destination=%s:%d", cfg.BindHost, cfg.Port, destinationHost, cfg.Port)
+	logger.Info("bind=%s:%d (waiting for clients)", cfg.BindHost, cfg.Port)
 	logger.Info("stream codec=%s capture=%dx%d@%dfps", cfg.Capture.Codec, cfg.Capture.Width, cfg.Capture.Height, cfg.Capture.FPS)
 	logger.Info("audio enabled=%t codec=%s sample_rate=%d channels=%d frame_ms=%d bitrate=%dkbps",
 		cfg.Audio.Enabled, cfg.Audio.Codec, cfg.Audio.SampleRate, cfg.Audio.Channels, cfg.Audio.FrameMS, cfg.Audio.BitrateKbps)
 
-	sender, err := server.NewSender(cfg, destinationHost)
+	sender, err := server.NewSender(cfg)
 	if err != nil {
 		logger.Error("create server sender: %v", err)
 	}

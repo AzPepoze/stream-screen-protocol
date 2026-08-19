@@ -1,8 +1,8 @@
 {
   "server_host": "127.0.0.1",
-  "port": 5002,
+  "port": 5000,
   "window": {
-    "title": "StreamScreen Client B - relay 5002",
+    "title": "StreamScreen Client - netem relay 5000",
     "width": 1280,
     "height": 720,
     "fullscreen": false

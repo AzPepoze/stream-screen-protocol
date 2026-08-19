@@ -27,7 +27,6 @@ make build
 ```json
 {
   "bind_host": "0.0.0.0",              // Server bind address
-  "client_host": "127.0.0.1",          // Client connection address
   "port": 7700,                        // Server port
   "capture": {
     "backend": "auto",                 // auto, x11, windows

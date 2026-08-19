@@ -1,44 +1,31 @@
-x-relay-common: &relay-common
-  build:
-    context: ../..
-    dockerfile: tests/netem/Dockerfile
-  cap_add:
-    - NET_ADMIN
-  restart: unless-stopped
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
-  environment:
-    LISTEN_ADDR: ":5000"
-    TARGET_ADDR: "${TARGET_ADDR:-host.docker.internal:7700}"
-    IDLE_TIMEOUT: "${IDLE_TIMEOUT:-2m}"
-
 services:
-  relay-a:
-    <<: *relay-common
-    container_name: csp-netem-relay-a
-    ports:
-      - "${RELAY_A_PORT:-5001}:5000/udp"
-    environment:
-      LISTEN_ADDR: ":5000"
-      TARGET_ADDR: "${TARGET_ADDR:-host.docker.internal:7700}"
-      IDLE_TIMEOUT: "${IDLE_TIMEOUT:-2m}"
-      NETEM_DELAY: "${RELAY_A_DELAY:-20ms}"
-      NETEM_JITTER: "${RELAY_A_JITTER:-2ms}"
-      NETEM_LOSS: "${RELAY_A_LOSS:-0.5%}"
-      NETEM_DUPLICATE: "${RELAY_A_DUPLICATE:-0%}"
-      NETEM_RATE: "${RELAY_A_RATE:-}"
-
-  relay-b:
-    <<: *relay-common
-    container_name: csp-netem-relay-b
-    ports:
-      - "${RELAY_B_PORT:-5002}:5000/udp"
-    environment:
-      LISTEN_ADDR: ":5000"
-      TARGET_ADDR: "${TARGET_ADDR:-host.docker.internal:7700}"
-      IDLE_TIMEOUT: "${IDLE_TIMEOUT:-2m}"
-      NETEM_DELAY: "${RELAY_B_DELAY:-100ms}"
-      NETEM_JITTER: "${RELAY_B_JITTER:-15ms}"
-      NETEM_LOSS: "${RELAY_B_LOSS:-8%}"
-      NETEM_DUPLICATE: "${RELAY_B_DUPLICATE:-0%}"
-      NETEM_RATE: "${RELAY_B_RATE:-}"
+     relay:
+          build:
+               context: ../..
+               dockerfile: tests/netem/Dockerfile
+          container_name: csp-netem-relay
+          cap_add:
+               - NET_ADMIN
+          restart: unless-stopped
+          extra_hosts:
+               - "host.docker.internal:host-gateway"
+          ports:
+               - "${RELAY_PORT:-5000}:5000/udp"
+          environment:
+               LISTEN_ADDR: ":5000"
+               TARGET_ADDR: "${TARGET_ADDR:-host.docker.internal:7700}"
+               IDLE_TIMEOUT: "${IDLE_TIMEOUT:-2m}"
+               # Preset options:
+               #   - "wifi"      (default) : 20ms ± 2ms, 0.5% loss
+               #   - "lan"                 : 0ms, 0% loss (transparent)
+               #   - "broadband"           : 10ms ± 1ms, 0.1% loss
+               #   - "mobile"              : 80ms ± 15ms, 3.0% loss
+               #   - "bad"                 : 150ms ± 30ms, 8.0% loss
+               #   - "extreme"             : 250ms ± 50ms, 15.0% loss, 10Mbps
+               #   - "custom"              : use NETEM_DELAY, NETEM_LOSS, etc. below
+               NETEM_PRESET: "${NETEM_PRESET:-mobile}"
+               NETEM_DELAY: "${NETEM_DELAY:-20ms}"
+               NETEM_JITTER: "${NETEM_JITTER:-2ms}"
+               NETEM_LOSS: "${NETEM_LOSS:-0.5%}"
+               NETEM_DUPLICATE: "${NETEM_DUPLICATE:-0%}"
+               NETEM_RATE: "${NETEM_RATE:-}"

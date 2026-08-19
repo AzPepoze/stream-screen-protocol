@@ -1,30 +1,20 @@
 services:
-  echo:
-    build:
-      context: ../..
-      dockerfile: tests/netem/Dockerfile.smoke
-    container_name: csp-netem-echo
-    environment:
-      LISTEN_ADDR: ":7700"
+     echo:
+          build:
+               context: ../..
+               dockerfile: tests/netem/Dockerfile.smoke
+          container_name: csp-netem-echo
+          environment:
+               LISTEN_ADDR: ":7700"
 
-  relay-a:
-    depends_on:
-      - echo
-    environment:
-      TARGET_ADDR: "echo:7700"
-      NETEM_DELAY: "10ms"
-      NETEM_JITTER: "0ms"
-      NETEM_LOSS: "0%"
-      NETEM_DUPLICATE: "0%"
-      NETEM_RATE: ""
-
-  relay-b:
-    depends_on:
-      - echo
-    environment:
-      TARGET_ADDR: "echo:7700"
-      NETEM_DELAY: "100ms"
-      NETEM_JITTER: "0ms"
-      NETEM_LOSS: "12%"
-      NETEM_DUPLICATE: "0%"
-      NETEM_RATE: ""
+     relay:
+          depends_on:
+               - echo
+          environment:
+               TARGET_ADDR: "echo:7700"
+               NETEM_PRESET: "custom"
+               NETEM_DELAY: "50ms"
+               NETEM_JITTER: "5ms"
+               NETEM_LOSS: "5%"
+               NETEM_DUPLICATE: "0%"
+               NETEM_RATE: ""

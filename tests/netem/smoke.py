@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 import json
+import os
 import socket
 import statistics
 import struct
 import threading
 import time
 
-PROFILES = {
-    "relay-a": ("127.0.0.1", 5001),
-    "relay-b": ("127.0.0.1", 5002),
-}
-PACKETS = 300
+RELAY_PORT = int(os.environ.get("RELAY_PORT", "5000"))
+TARGET_ADDR = ("127.0.0.1", RELAY_PORT)
+PACKETS = 200
 SEND_INTERVAL_SECONDS = 0.005
 RECEIVE_GRACE_SECONDS = 2.0
 
 
-def probe(name: str, relay_addr: tuple[str, int]) -> dict:
+def probe(relay_addr: tuple[str, int]) -> dict:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", 0))
     sock.settimeout(0.05)
@@ -68,7 +67,7 @@ def probe(name: str, relay_addr: tuple[str, int]) -> dict:
         samples = sorted(rtts_ms)
 
     return {
-        "name": name,
+        "target": f"{relay_addr[0]}:{relay_addr[1]}",
         "sent": PACKETS,
         "received": received_count,
         "receive_ratio": received_count / PACKETS,
@@ -79,45 +78,23 @@ def probe(name: str, relay_addr: tuple[str, int]) -> dict:
 
 
 def main() -> None:
-    results = {}
-    results_lock = threading.Lock()
-    threads = []
-
-    def run_profile(name, addr):
-        result = probe(name, addr)
-        with results_lock:
-            results[name] = result
-
-    for name, addr in PROFILES.items():
-        thread = threading.Thread(target=run_profile, args=(name, addr))
-        thread.start()
-        threads.append(thread)
-
-    for thread in threads:
-        thread.join()
-
-    print(json.dumps(results, indent=2, sort_keys=True))
-    a = results["relay-a"]
-    b = results["relay-b"]
+    result = probe(TARGET_ADDR)
+    print(json.dumps(result, indent=2, sort_keys=True))
 
     failures = []
-    if a["receive_ratio"] < 0.98:
-        failures.append(f"relay-a receive ratio too low: {a['receive_ratio']:.3f}")
-    if b["receive_ratio"] < 0.65:
-        failures.append(f"relay-b receive ratio too low: {b['receive_ratio']:.3f}")
-    if b["loss_ratio"] < a["loss_ratio"] + 0.10:
+    if result["received"] == 0:
+        failures.append("no packets received through netem relay")
+    if result["median_rtt_ms"] < 60.0:
         failures.append(
-            f"loss profiles not distinct: a={a['loss_ratio']:.3f} b={b['loss_ratio']:.3f}"
+            f"measured median RTT ({result['median_rtt_ms']:.1f}ms) is lower than expected netem delay (~100ms RTT)"
         )
-    if b["median_rtt_ms"] < a["median_rtt_ms"] + 120:
-        failures.append(
-            f"delay profiles not distinct: a={a['median_rtt_ms']:.1f}ms b={b['median_rtt_ms']:.1f}ms"
-        )
+    if result["receive_ratio"] < 0.60:
+        failures.append(f"receive ratio too low: {result['receive_ratio']:.3f}")
 
     if failures:
         raise SystemExit("\n".join(failures))
 
-    print("PASS: host traffic traversed both bidirectional netem relays with distinct loss/delay profiles")
+    print("PASS: host traffic traversed bidirectional netem relay with configured impairment")
 
 
 if __name__ == "__main__":

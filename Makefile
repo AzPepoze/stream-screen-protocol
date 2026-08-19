@@ -20,7 +20,7 @@ NETEM_SMOKE_COMPOSE := docker compose -f tests/netem/compose.yml -f tests/netem/
 .PHONY: all build build-server build-client run-server run-client test clean
 .PHONY: build-linux build-windows build-windows-static check-windows-static-env
 .PHONY: build\:linux build\:windows
-.PHONY: netem-up netem-down netem-logs netem-server netem-client-a netem-client-b test-netem
+.PHONY: netem-up netem-down netem-logs netem-server netem-client test-netem
 
 all: build test
 
@@ -85,11 +85,8 @@ netem-logs:
 netem-server: build-server
 	$(SERVER_BIN) -config server.config.json
 
-netem-client-a: build-client
-	cd tests/netem/client-a && ../../../$(CLIENT_BIN)
-
-netem-client-b: build-client
-	cd tests/netem/client-b && ../../../$(CLIENT_BIN)
+netem-client: build-client
+	cd tests/netem/client && ../../../$(CLIENT_BIN)
 
 test-netem:
 	@set -e; \

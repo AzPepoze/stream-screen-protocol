@@ -60,6 +60,7 @@ func main() {
 	}
 
 	log.Printf("UDP impairment relay listening=%s target=%s idle_timeout=%s", listener.LocalAddr(), targetUDP, idleTimeout)
+	log.Printf("Setup: Point client to port %s and ensure server is running on %s", listener.LocalAddr(), targetUDP)
 	go r.reapIdle()
 	if err := r.run(); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.Fatal(err)
@@ -80,7 +81,7 @@ func (r *relay) run() error {
 			continue
 		}
 		r.touch(client.String())
-		if _, err := s.upstream.Write(payload); err != nil {
+		if _, err := s.upstream.WriteToUDP(payload, r.target); err != nil {
 			log.Printf("forward client=%s target=%s: %v", client, r.target, err)
 			r.dropSession(client.String(), s)
 		}
@@ -95,7 +96,7 @@ func (r *relay) sessionFor(client *net.UDPAddr) (*session, error) {
 		return s, nil
 	}
 
-	upstream, err := net.DialUDP("udp", nil, r.target)
+	upstream, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		r.mu.Unlock()
 		return nil, err
@@ -113,14 +114,17 @@ func (r *relay) sessionFor(client *net.UDPAddr) (*session, error) {
 func (r *relay) copyReplies(key string, s *session) {
 	buf := make([]byte, maxDatagramSize)
 	for {
-		n, err := s.upstream.Read(buf)
+		n, from, err := s.upstream.ReadFromUDP(buf)
 		if err != nil {
 			r.dropSession(key, s)
 			return
 		}
+		if from.Port != r.target.Port {
+			continue
+		}
 		r.touch(key)
 		if _, err := r.listener.WriteToUDP(buf[:n], s.client); err != nil {
-			log.Printf("reply target=%s client=%s: %v", r.target, s.client, err)
+			log.Printf("reply target=%s client=%s: %v", from, s.client, err)
 			r.dropSession(key, s)
 			return
 		}

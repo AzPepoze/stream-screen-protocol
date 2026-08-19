@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -38,20 +37,7 @@ type Sender struct {
 	audioCancel    context.CancelFunc
 }
 
-func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
-	var initialAddr *net.UDPAddr
-	if dest != "" {
-		var err error
-		initialAddr, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", dest, cfg.Port))
-		if err != nil {
-			return nil, err
-		}
-		if initialAddr.IP.IsLoopback() && initialAddr.Port == cfg.Port {
-			logger.Info("Sender: configured destination %s appears to be local; ignoring to avoid self-send", initialAddr.String())
-			initialAddr = nil
-		}
-	}
-
+func NewSender(cfg config.ServerConfig) (*Sender, error) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(cfg.BindHost), Port: cfg.Port})
 	if err != nil {
 		return nil, err
@@ -93,9 +79,6 @@ func NewSender(cfg config.ServerConfig, dest string) (*Sender, error) {
 		clientTimeout:  5 * time.Second,
 		codecName:      codecName,
 		blockyPipeline: blockyPipeline,
-	}
-	if initialAddr != nil {
-		s.registerViewer(initialAddr)
 	}
 	return s, nil
 }
