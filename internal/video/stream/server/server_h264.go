@@ -29,7 +29,23 @@ func (s *Sender) EnsureH264Pipeline() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize h264 pipeline: %w", err)
 	}
-	s.h264Pipeline = pipeline
+
+	// Another goroutine may have initialized/reconfigured the pipeline while
+	// the relatively expensive GStreamer construction happened outside cfgMu.
+	s.cfgMu.Lock()
+	if s.codecName != "h264" {
+		s.cfgMu.Unlock()
+		_ = pipeline.Close()
+		return nil
+	}
+	if s.h264Pipeline == nil {
+		s.h264Pipeline = pipeline
+		pipeline = nil
+	}
+	s.cfgMu.Unlock()
+	if pipeline != nil {
+		_ = pipeline.Close()
+	}
 	return nil
 }
 
@@ -43,7 +59,14 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 		return err
 	}
 
-	encodedData, err := s.h264Pipeline.SendFrame(frameData, width, height)
+	s.cfgMu.RLock()
+	pipeline := s.h264Pipeline
+	s.cfgMu.RUnlock()
+	if pipeline == nil {
+		return fmt.Errorf("h264 pipeline unavailable")
+	}
+
+	encodedData, err := pipeline.SendFrame(frameData, width, height)
 	if err != nil {
 		return fmt.Errorf("h264 encoding failed: %w", err)
 	}
@@ -77,15 +100,45 @@ func (s *Sender) SendH264Frame(frameData []byte, width, height int) error {
 		packets = append(packets, buf)
 	}
 
-	s.broadcastVideoBatch(packets, frameSeq)
+	s.broadcastH264Batch(packets, frameSeq, h264AccessUnitHasIDR(encodedData))
 	return nil
 }
 
+// h264AccessUnitHasIDR checks an Annex-B access unit for a type-5 NAL. The
+// server uses this only for transport resynchronization: after a viewer queue
+// overrun, dependent P frames are skipped until a real decoder recovery point
+// can be delivered intact.
+func h264AccessUnitHasIDR(data []byte) bool {
+	for i := 0; i+4 < len(data); {
+		start := -1
+		startCodeLen := 0
+		if i+3 < len(data) && data[i] == 0 && data[i+1] == 0 && data[i+2] == 1 {
+			start = i
+			startCodeLen = 3
+		} else if i+4 < len(data) && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1 {
+			start = i
+			startCodeLen = 4
+		}
+		if start < 0 {
+			i++
+			continue
+		}
+		nal := start + startCodeLen
+		if nal < len(data) && data[nal]&0x1f == 5 {
+			return true
+		}
+		i = nal + 1
+	}
+	return false
+}
+
 func (s *Sender) CloseH264Pipeline() error {
-	if s.h264Pipeline != nil {
-		err := s.h264Pipeline.Close()
-		s.h264Pipeline = nil
-		return err
+	s.cfgMu.Lock()
+	pipeline := s.h264Pipeline
+	s.h264Pipeline = nil
+	s.cfgMu.Unlock()
+	if pipeline != nil {
+		return pipeline.Close()
 	}
 	return nil
 }

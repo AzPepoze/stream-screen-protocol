@@ -50,11 +50,25 @@ type tokenPacer struct {
 	lastRefill       time.Time
 }
 
+func burstBytesForRate(targetBps uint64) float64 {
+	// Keep roughly 100ms of send credit so an occasional large IDR can burst
+	// without being stretched across several frame deadlines. Bound it so an
+	// idle sender cannot accumulate an unbounded UDP burst.
+	burst := float64(targetBps) * 0.100 / 8.0
+	if burst < 16*1024 {
+		burst = 16 * 1024
+	}
+	if burst > 256*1024 {
+		burst = 256 * 1024
+	}
+	return burst
+}
+
 func newTokenPacer(targetBps uint64) *tokenPacer {
-	if targetBps <= 0 {
+	if targetBps == 0 {
 		targetBps = 6000000
 	}
-	burst := 4096.0 // allow ~3-4 MTU burst
+	burst := burstBytesForRate(targetBps)
 	return &tokenPacer{
 		targetBitrateBps: targetBps,
 		tokens:           burst,
@@ -73,44 +87,74 @@ func (p *tokenPacer) setTargetBitrate(bps uint64) {
 		bps = 50000000
 	}
 	p.targetBitrateBps = bps
-}
-
-func (p *tokenPacer) pace(packetBytes int, immediate bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	now := time.Now()
-	if p.lastRefill.IsZero() {
-		p.lastRefill = now
-		p.tokens = p.maxTokens
-	}
-	elapsed := now.Sub(p.lastRefill).Seconds()
-	p.lastRefill = now
-
-	p.tokens += float64(p.targetBitrateBps) * elapsed / 8.0
+	p.maxTokens = burstBytesForRate(bps)
 	if p.tokens > p.maxTokens {
 		p.tokens = p.maxTokens
 	}
+	if p.tokens < -p.maxTokens {
+		p.tokens = -p.maxTokens
+	}
+}
 
+func (p *tokenPacer) targetBitrate() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.targetBitrateBps
+}
+
+func (p *tokenPacer) pace(packetBytes int, immediate bool) {
+	if packetBytes <= 0 {
+		return
+	}
 	cost := float64(packetBytes)
-	if immediate {
-		p.tokens -= cost
-		return
-	}
 
-	if p.tokens >= cost {
-		p.tokens -= cost
-		return
-	}
-
-	needed := cost - p.tokens
-	waitSec := (needed * 8.0) / float64(p.targetBitrateBps)
-	p.tokens = 0
-	if waitSec > 0 {
-		if waitSec > 0.05 {
-			waitSec = 0.05
+	for {
+		p.mu.Lock()
+		now := time.Now()
+		if p.lastRefill.IsZero() {
+			p.lastRefill = now
+			p.tokens = p.maxTokens
 		}
-		time.Sleep(time.Duration(waitSec * float64(time.Second)))
+		elapsed := now.Sub(p.lastRefill).Seconds()
+		p.lastRefill = now
+		p.tokens += float64(p.targetBitrateBps) * elapsed / 8.0
+		if p.tokens > p.maxTokens {
+			p.tokens = p.maxTokens
+		}
+
+		if immediate {
+			// Audio has scheduling priority, not free bandwidth. Allow a bounded
+			// debt so a short audio burst is immediate but later media yields.
+			p.tokens -= cost
+			if p.tokens < -p.maxTokens {
+				p.tokens = -p.maxTokens
+			}
+			p.mu.Unlock()
+			return
+		}
+
+		if p.tokens >= cost {
+			p.tokens -= cost
+			p.mu.Unlock()
+			return
+		}
+
+		needed := cost - p.tokens
+		rate := p.targetBitrateBps
+		p.mu.Unlock()
+
+		if rate == 0 {
+			rate = 500000
+		}
+		wait := time.Duration((needed * 8.0 / float64(rate)) * float64(time.Second))
+		if wait <= 0 {
+			continue
+		}
+		// Wake periodically so a control update can raise the target quickly.
+		if wait > 50*time.Millisecond {
+			wait = 50 * time.Millisecond
+		}
+		time.Sleep(wait)
 	}
 }
 
@@ -119,17 +163,20 @@ type packetBatch struct {
 	class    mediaClass
 	frameSeq uint32
 	deadline time.Time
+	keyframe bool
 }
 
 type viewerState struct {
 	addr *net.UDPAddr
 
-	mu              sync.RWMutex
-	lastSeen        time.Time
-	fecGroupSize    int
-	congestionState CongestionState
-	healthyRounds   int
-	pacer           *tokenPacer
+	mu                    sync.RWMutex
+	lastSeen              time.Time
+	fecGroupSize          int
+	congestionState       CongestionState
+	healthyRounds         int
+	targetMediaBitrateBps uint64
+	needsKeyframe         bool
+	pacer                 *tokenPacer
 
 	videoQ  chan packetBatch
 	audioQ  chan packetBatch
@@ -143,13 +190,14 @@ type viewerState struct {
 func newViewerState(addr *net.UDPAddr) *viewerState {
 	copyAddr := *addr
 	return &viewerState{
-		addr:     &copyAddr,
-		lastSeen: time.Now(),
-		pacer:    newTokenPacer(6000000),
-		videoQ:   make(chan packetBatch, 3),
-		audioQ:   make(chan packetBatch, 32),
-		repairQ:  make(chan packetBatch, 16),
-		done:     make(chan struct{}),
+		addr:                    &copyAddr,
+		lastSeen:                time.Now(),
+		targetMediaBitrateBps: 6000000,
+		pacer:                   newTokenPacer(6000000),
+		videoQ:                  make(chan packetBatch, 3),
+		audioQ:                  make(chan packetBatch, 32),
+		repairQ:                 make(chan packetBatch, 16),
+		done:                    make(chan struct{}),
 	}
 }
 
@@ -177,11 +225,19 @@ func (v *viewerState) fecGroup() int {
 	return v.fecGroupSize
 }
 
+func (v *viewerState) mediaTarget() uint64 {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.targetMediaBitrateBps
+}
+
 func (v *viewerState) shouldDropVideoBatch(frameSeq uint32) bool {
 	v.mu.RLock()
 	state := v.congestionState
 	v.mu.RUnlock()
 
+	// This policy is safe for independently decodable/block-based media only.
+	// H.264 uses broadcastH264Batch, which preserves the shared reference chain.
 	switch state {
 	case CongestionHealthy:
 		return false
@@ -273,6 +329,19 @@ func (v *viewerState) flushVideo() {
 	}
 }
 
+func (s *Sender) markViewerNeedsKeyframe(viewer *viewerState) {
+	if viewer == nil {
+		return
+	}
+	viewer.mu.Lock()
+	already := viewer.needsKeyframe
+	viewer.needsKeyframe = true
+	viewer.mu.Unlock()
+	if !already {
+		_ = s.ForceKeyframe()
+	}
+}
+
 func (s *Sender) BroadcastVideoInfo() {
 	s.cfgMu.RLock()
 	width := uint32(s.cfg.Capture.Width)
@@ -341,8 +410,9 @@ func enqueueLatest(ch chan packetBatch, batch packetBatch) {
 	}
 }
 
-// broadcastVideoBatch keeps the encoded DATA packets shared between viewers,
-// while adding parity only for viewers whose measured loss warrants it.
+// broadcastVideoBatch is used by independently decodable media (the block/tile
+// path). H.264 must use broadcastH264Batch because arbitrary P-frame shedding
+// breaks the reference chain until the next IDR.
 func (s *Sender) broadcastVideoBatch(packets [][]byte, frameSeq uint32) {
 	if len(packets) == 0 {
 		return
@@ -382,12 +452,81 @@ func (s *Sender) broadcastVideoBatch(packets [][]byte, frameSeq uint32) {
 	}
 }
 
+func (s *Sender) broadcastH264Batch(packets [][]byte, frameSeq uint32, keyframe bool) {
+	if len(packets) == 0 {
+		return
+	}
+	deadline := time.Now().Add(s.frameDeadline)
+	fecCache := make(map[int][][]byte)
+	for _, viewer := range s.activeViewers() {
+		viewer.mu.RLock()
+		needsKeyframe := viewer.needsKeyframe
+		groupSize := viewer.fecGroupSize
+		viewer.mu.RUnlock()
+
+		if needsKeyframe && !keyframe {
+			atomic.AddUint64(&viewer.droppedVideo, 1)
+			continue
+		}
+
+		viewerPackets := packets
+		if groupSize >= 2 {
+			augmented, ok := fecCache[groupSize]
+			if !ok {
+				fecPackets, err := stream.BuildXORFEC(packets, groupSize)
+				if err == nil && len(fecPackets) > 0 {
+					augmented = make([][]byte, 0, len(packets)+len(fecPackets))
+					augmented = append(augmented, packets...)
+					augmented = append(augmented, fecPackets...)
+				} else {
+					augmented = packets
+				}
+				fecCache[groupSize] = augmented
+			}
+			viewerPackets = augmented
+		}
+
+		batch := packetBatch{
+			packets:  viewerPackets,
+			class:    mediaVideo,
+			frameSeq: frameSeq,
+			deadline: deadline,
+			keyframe: keyframe,
+		}
+		select {
+		case viewer.videoQ <- batch:
+			if keyframe {
+				viewer.mu.Lock()
+				viewer.needsKeyframe = false
+				viewer.mu.Unlock()
+			}
+		default:
+			// Never silently discard one reference frame and continue with later
+			// dependent P frames. Flush latency, wait for an IDR, and resume there.
+			viewer.flushVideo()
+			atomic.AddUint64(&viewer.droppedVideo, 1)
+			if keyframe {
+				select {
+				case viewer.videoQ <- batch:
+					viewer.mu.Lock()
+					viewer.needsKeyframe = false
+					viewer.mu.Unlock()
+				default:
+					s.markViewerNeedsKeyframe(viewer)
+				}
+			} else {
+				s.markViewerNeedsKeyframe(viewer)
+			}
+		}
+	}
+}
+
 func (s *Sender) sendVideoBatchTo(addr *net.UDPAddr, packets [][]byte, frameSeq uint32) {
 	viewer := s.touchViewer(addr)
 	if viewer == nil || len(packets) == 0 {
 		return
 	}
-	if viewer.shouldDropVideoBatch(frameSeq) {
+	if s.codecName != "h264" && viewer.shouldDropVideoBatch(frameSeq) {
 		atomic.AddUint64(&viewer.droppedVideo, 1)
 		return
 	}
@@ -437,22 +576,18 @@ func (s *Sender) viewerSendLoop(viewer *viewerState) {
 		default:
 		}
 
-		// 1. Drain all pending audio first (audio has highest scheduling priority)
-		drainedAudio := false
+		// 1. Drain pending audio first (audio has highest scheduling priority).
 		for {
 			select {
 			case batch := <-viewer.audioQ:
 				s.sendBatch(viewer, batch)
-				drainedAudio = true
 			default:
-				drainedAudio = false
-			}
-			if !drainedAudio {
-				break
+				goto audioDrained
 			}
 		}
+	audioDrained:
 
-		// 2. Process bounded repair budget (1 batch per cycle before yielding to video)
+		// 2. Process a bounded repair budget before yielding to fresh video.
 		servicedRepair := false
 		select {
 		case batch := <-viewer.repairQ:
@@ -461,7 +596,7 @@ func (s *Sender) viewerSendLoop(viewer *viewerState) {
 		default:
 		}
 
-		// 3. Service next available batch
+		// 3. Service next available batch.
 		select {
 		case <-s.ctx.Done():
 			return
@@ -481,11 +616,20 @@ func (s *Sender) viewerSendLoop(viewer *viewerState) {
 
 func (s *Sender) sendBatch(viewer *viewerState, batch packetBatch) {
 	if !batch.deadline.IsZero() && time.Now().After(batch.deadline) {
+		if batch.class == mediaVideo && s.codecName == "h264" {
+			s.markViewerNeedsKeyframe(viewer)
+		}
 		return
 	}
-	isAudio := (batch.class == mediaAudio)
+
+	isAudio := batch.class == mediaAudio
+	isH264Video := batch.class == mediaVideo && s.codecName == "h264"
 	for _, packet := range batch.packets {
-		if !batch.deadline.IsZero() && time.Now().After(batch.deadline) {
+		// Once an H.264 AU starts transmission, finish the AU. Cutting it off at
+		// the deadline creates a syntactically truncated frame that can never be
+		// decoded and poisons the reference chain. Other media/repair remains
+		// deadline-aware packet by packet.
+		if !isH264Video && !batch.deadline.IsZero() && time.Now().After(batch.deadline) {
 			return
 		}
 		viewer.pacer.pace(len(packet), isAudio)

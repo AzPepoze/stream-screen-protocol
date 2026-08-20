@@ -14,26 +14,13 @@ type testLossTracker struct {
 	unrecovered    int
 }
 
-func (t *testLossTracker) OnUniqueMissingDetected(count int) {
-	t.uniqueDetected += count
-}
+func (t *testLossTracker) OnUniqueMissingDetected(count int) { t.uniqueDetected += count }
+func (t *testLossTracker) OnMissingRecoveredByNACK(count int) { t.recoveredNACK += count }
+func (t *testLossTracker) OnMissingRecoveredByFEC(count int) { t.recoveredFEC += count }
+func (t *testLossTracker) OnMissingUnrecovered(count int) { t.unrecovered += count }
 
-func (t *testLossTracker) OnMissingRecoveredByNACK(count int) {
-	t.recoveredNACK += count
-}
-
-func (t *testLossTracker) OnMissingRecoveredByFEC(count int) {
-	t.recoveredFEC += count
-}
-
-func (t *testLossTracker) OnMissingUnrecovered(count int) {
-	t.unrecovered += count
-}
-
-// 1. Test that the same missing packet being NACKed repeatedly does not inflate unique loss.
-func TestRepeatedNACKRetriesDoNotInflateUniqueLoss(t *testing.T) {
-	tracker := &testLossTracker{}
-	jb := NewJitterBufferWithOptions(JitterBufferOptions{
+func newLossTestBuffer(tracker *testLossTracker) *JitterBuffer {
+	return NewJitterBufferWithOptions(JitterBufferOptions{
 		MaxLatency:        50 * time.Millisecond,
 		NackRetryDelay:    5 * time.Millisecond,
 		PartialFrameReady: 1.0,
@@ -41,139 +28,149 @@ func TestRepeatedNACKRetriesDoNotInflateUniqueLoss(t *testing.T) {
 		ForceOutput:       false,
 		LossObserver:      tracker,
 	})
+}
 
-	// Push packet 0 of 3 (packets 1 and 2 are missing)
-	header := stream.PacketHeader{FrameSeq: 10, PacketID: 0, TotalPackets: 3}
-	jb.Push(header, []byte("data-0"))
+// Sequential packets that simply have not arrived yet are not packet loss.
+// This is the regression that previously produced ~50% raw loss on a 0.5%
+// netem link after the first fragment of every frame.
+func TestFuturePacketsAreNotCountedAsLoss(t *testing.T) {
+	tracker := &testLossTracker{}
+	jb := newLossTestBuffer(tracker)
 
-	if tracker.uniqueDetected != 2 {
-		t.Fatalf("expected 2 unique missing packets detected, got %d", tracker.uniqueDetected)
-	}
-
-	// Trigger 4 subsequent NACK checks by simulating time passage and pushing
-	for i := 0; i < 4; i++ {
-		jb.mu.Lock()
-		jb.frames[10].receivedAt = time.Now().Add(-10 * time.Millisecond)
-		delete(jb.nackedFrames, 10)
-		jb.mu.Unlock()
-
-		jb.Push(header, []byte("data-0"))
-	}
-
-	// uniqueDetected must STILL be exactly 2
-	if tracker.uniqueDetected != 2 {
-		t.Fatalf("uniqueDetected inflated by NACK retries: got %d want 2", tracker.uniqueDetected)
+	for id := uint32(0); id < 3; id++ {
+		ready, _ := jb.Push(stream.PacketHeader{FrameSeq: 1, PacketID: id, TotalPackets: 3}, []byte{byte(id)})
+		if id < 2 && ready != nil {
+			t.Fatalf("frame completed early at packet %d", id)
+		}
+		if tracker.uniqueDetected != 0 {
+			t.Fatalf("packet %d caused false loss detection: %d", id, tracker.uniqueDetected)
+		}
 	}
 }
 
-// 2. Test missing packet recovered by NACK
-func TestMissingPacketRecoveredByNACK(t *testing.T) {
+func TestObservedGapBecomesUniqueLossOnce(t *testing.T) {
 	tracker := &testLossTracker{}
-	jb := NewJitterBufferWithOptions(JitterBufferOptions{
-		MaxLatency:        100 * time.Millisecond,
-		NackRetryDelay:    10 * time.Millisecond,
-		PartialFrameReady: 1.0,
-		AllowPartial:      false,
-		ForceOutput:       false,
-		LossObserver:      tracker,
-	})
+	jb := newLossTestBuffer(tracker)
 
-	// Frame with 3 packets, packet 0 arrives
-	jb.Push(stream.PacketHeader{FrameSeq: 20, PacketID: 0, TotalPackets: 3}, []byte("p0"))
-	if tracker.uniqueDetected != 2 {
-		t.Fatalf("uniqueDetected got %d want 2", tracker.uniqueDetected)
+	jb.Push(stream.PacketHeader{FrameSeq: 10, PacketID: 0, TotalPackets: 3}, []byte("p0"))
+	jb.Push(stream.PacketHeader{FrameSeq: 10, PacketID: 2, TotalPackets: 3}, []byte("p2"))
+	if tracker.uniqueDetected != 0 {
+		t.Fatalf("gap should wait for reorder grace, got %d", tracker.uniqueDetected)
 	}
 
-	// Packet 1 arrives via NACK response
-	jb.Push(stream.PacketHeader{FrameSeq: 20, PacketID: 1, TotalPackets: 3}, []byte("p1"))
+	jb.mu.Lock()
+	jb.frames[10].lastPacketAt = time.Now().Add(-10 * time.Millisecond)
+	jb.checkPendingFrames(time.Now(), 10)
+	jb.mu.Unlock()
+	if tracker.uniqueDetected != 1 {
+		t.Fatalf("expected one observed missing packet, got %d", tracker.uniqueDetected)
+	}
+}
+
+func TestRepeatedNACKRetriesDoNotInflateUniqueLoss(t *testing.T) {
+	tracker := &testLossTracker{}
+	jb := newLossTestBuffer(tracker)
+	jb.Push(stream.PacketHeader{FrameSeq: 10, PacketID: 0, TotalPackets: 3}, []byte("p0"))
+	jb.Push(stream.PacketHeader{FrameSeq: 10, PacketID: 2, TotalPackets: 3}, []byte("p2"))
+
+	for i := 0; i < 4; i++ {
+		jb.mu.Lock()
+		jb.frames[10].lastPacketAt = time.Now().Add(-10 * time.Millisecond)
+		jb.nackedFrames[10] = time.Now().Add(-10 * time.Millisecond)
+		jb.checkPendingFrames(time.Now(), 10)
+		jb.mu.Unlock()
+	}
+	if tracker.uniqueDetected != 1 {
+		t.Fatalf("unique loss inflated by NACK retries: got %d want 1", tracker.uniqueDetected)
+	}
+}
+
+func TestMissingPacketRecoveredAfterNACK(t *testing.T) {
+	tracker := &testLossTracker{}
+	jb := newLossTestBuffer(tracker)
+	jb.Push(stream.PacketHeader{FrameSeq: 20, PacketID: 0, TotalPackets: 3}, []byte("p0"))
+	jb.Push(stream.PacketHeader{FrameSeq: 20, PacketID: 2, TotalPackets: 3}, []byte("p2"))
+
+	jb.mu.Lock()
+	jb.frames[20].lastPacketAt = time.Now().Add(-10 * time.Millisecond)
+	jb.checkPendingFrames(time.Now(), 20)
+	jb.mu.Unlock()
+	if tracker.uniqueDetected != 1 {
+		t.Fatalf("uniqueDetected got %d want 1", tracker.uniqueDetected)
+	}
+
+	ready, seq := jb.Push(stream.PacketHeader{FrameSeq: 20, PacketID: 1, TotalPackets: 3}, []byte("p1"))
+	if ready == nil || seq != 20 {
+		t.Fatalf("expected frame 20 ready")
+	}
 	if tracker.recoveredNACK != 1 {
 		t.Fatalf("recoveredNACK got %d want 1", tracker.recoveredNACK)
-	}
-
-	// Packet 2 arrives, completing the frame
-	ready, seq := jb.Push(stream.PacketHeader{FrameSeq: 20, PacketID: 2, TotalPackets: 3}, []byte("p2"))
-	if ready == nil || seq != 20 {
-		t.Fatalf("expected frame 20 ready, got %v seq=%d", ready != nil, seq)
-	}
-	if tracker.recoveredNACK != 2 {
-		t.Fatalf("recoveredNACK got %d want 2", tracker.recoveredNACK)
 	}
 	if tracker.unrecovered != 0 {
 		t.Fatalf("unrecovered got %d want 0", tracker.unrecovered)
 	}
 }
 
-// 3. Test missing packet recovered by FEC
 func TestMissingPacketRecoveredByFEC(t *testing.T) {
 	tracker := &testLossTracker{}
-	jb := NewJitterBufferWithOptions(JitterBufferOptions{
-		MaxLatency:        100 * time.Millisecond,
-		NackRetryDelay:    10 * time.Millisecond,
-		PartialFrameReady: 1.0,
-		AllowPartial:      false,
-		ForceOutput:       false,
-		LossObserver:      tracker,
-	})
-
-	// Frame 30 has 2 packets. Packet 0 arrives.
+	jb := newLossTestBuffer(tracker)
 	jb.Push(stream.PacketHeader{FrameSeq: 30, PacketID: 0, TotalPackets: 2}, []byte("a"))
+
+	// FEC recovery itself is evidence that an original media packet was lost,
+	// even when it happened before the NACK grace period elapsed.
+	jb.MarkRecoveredByFEC(30, 1)
 	if tracker.uniqueDetected != 1 {
 		t.Fatalf("uniqueDetected got %d want 1", tracker.uniqueDetected)
 	}
-
-	// Packet 1 recovered by FEC
-	jb.MarkRecoveredByFEC(30, 1)
 	if tracker.recoveredFEC != 1 {
 		t.Fatalf("recoveredFEC got %d want 1", tracker.recoveredFEC)
 	}
 
-	// Pushing the FEC-recovered packet should complete frame without double counting NACK recovery
 	ready, seq := jb.Push(stream.PacketHeader{FrameSeq: 30, PacketID: 1, TotalPackets: 2}, []byte("b"))
 	if ready == nil || seq != 30 {
 		t.Fatalf("expected frame 30 ready")
 	}
 	if tracker.recoveredNACK != 0 {
-		t.Fatalf("recoveredNACK should be 0, got %d", tracker.recoveredNACK)
+		t.Fatalf("FEC recovery was double counted as NACK recovery: %d", tracker.recoveredNACK)
 	}
 }
 
-// 4. Test packet detected by both mechanisms without double counting
-func TestPacketDetectedByBothWithoutDoubleCounting(t *testing.T) {
+func TestPacketDetectedThenRecoveredByFECWithoutDoubleCounting(t *testing.T) {
 	tracker := &testLossTracker{}
-	jb := NewJitterBufferWithOptions(JitterBufferOptions{
-		MaxLatency:        100 * time.Millisecond,
-		NackRetryDelay:    10 * time.Millisecond,
-		PartialFrameReady: 1.0,
-		AllowPartial:      false,
-		ForceOutput:       false,
-		LossObserver:      tracker,
-	})
-
-	// Frame 40 has 3 packets. Packet 0 arrives.
+	jb := newLossTestBuffer(tracker)
 	jb.Push(stream.PacketHeader{FrameSeq: 40, PacketID: 0, TotalPackets: 3}, []byte("x"))
-	if tracker.uniqueDetected != 2 {
-		t.Fatalf("uniqueDetected got %d want 2", tracker.uniqueDetected)
+	jb.Push(stream.PacketHeader{FrameSeq: 40, PacketID: 2, TotalPackets: 3}, []byte("z"))
+
+	jb.mu.Lock()
+	jb.frames[40].lastPacketAt = time.Now().Add(-10 * time.Millisecond)
+	jb.checkPendingFrames(time.Now(), 40)
+	jb.mu.Unlock()
+	if tracker.uniqueDetected != 1 {
+		t.Fatalf("uniqueDetected got %d want 1", tracker.uniqueDetected)
 	}
 
-	// Mark packet 1 recovered by FEC first
 	jb.MarkRecoveredByFEC(40, 1)
-	if tracker.recoveredFEC != 1 {
-		t.Fatalf("recoveredFEC got %d want 1", tracker.recoveredFEC)
-	}
-
-	// Now packet 1 also arrives over UDP (e.g. duplicate / delayed NACK)
 	jb.Push(stream.PacketHeader{FrameSeq: 40, PacketID: 1, TotalPackets: 3}, []byte("y"))
-
-	// Should not increment recoveredNACK since already recovered by FEC
-	if tracker.recoveredNACK != 0 {
-		t.Fatalf("recoveredNACK got %d want 0 (no double counting)", tracker.recoveredNACK)
-	}
-	if tracker.recoveredFEC != 1 {
-		t.Fatalf("recoveredFEC got %d want 1", tracker.recoveredFEC)
+	if tracker.uniqueDetected != 1 || tracker.recoveredFEC != 1 || tracker.recoveredNACK != 0 {
+		t.Fatalf("double counted mixed recovery: unique=%d fec=%d nack=%d", tracker.uniqueDetected, tracker.recoveredFEC, tracker.recoveredNACK)
 	}
 }
 
-// 5. Test expired/unrecoverable packet
+func TestTailLossDetectedAfterNewerFrame(t *testing.T) {
+	tracker := &testLossTracker{}
+	jb := newLossTestBuffer(tracker)
+	jb.Push(stream.PacketHeader{FrameSeq: 50, PacketID: 0, TotalPackets: 2}, []byte("p0"))
+
+	jb.mu.Lock()
+	jb.frames[50].lastPacketAt = time.Now().Add(-10 * time.Millisecond)
+	jb.mu.Unlock()
+	jb.Push(stream.PacketHeader{FrameSeq: 51, PacketID: 0, TotalPackets: 1}, []byte("next"))
+
+	if tracker.uniqueDetected != 1 {
+		t.Fatalf("tail packet should be detected once newer frame proves frame closure, got %d", tracker.uniqueDetected)
+	}
+}
+
 func TestExpiredUnrecoverablePacket(t *testing.T) {
 	tracker := &testLossTracker{}
 	jb := NewJitterBufferWithOptions(JitterBufferOptions{
@@ -184,21 +181,17 @@ func TestExpiredUnrecoverablePacket(t *testing.T) {
 		ForceOutput:       false,
 		LossObserver:      tracker,
 	})
+	jb.Push(stream.PacketHeader{FrameSeq: 60, PacketID: 0, TotalPackets: 2}, []byte("p0"))
 
-	// Frame 50 has 2 packets, only packet 0 arrives
-	jb.Push(stream.PacketHeader{FrameSeq: 50, PacketID: 0, TotalPackets: 2}, []byte("lone"))
+	jb.mu.Lock()
+	jb.frames[60].receivedAt = time.Now().Add(-50 * time.Millisecond)
+	jb.frames[60].lastPacketAt = time.Now().Add(-50 * time.Millisecond)
+	jb.mu.Unlock()
+	jb.Push(stream.PacketHeader{FrameSeq: 61, PacketID: 0, TotalPackets: 1}, []byte("next"))
+
 	if tracker.uniqueDetected != 1 {
 		t.Fatalf("uniqueDetected got %d want 1", tracker.uniqueDetected)
 	}
-
-	// Simulate expiration past 2*maxLatency
-	jb.mu.Lock()
-	jb.frames[50].receivedAt = time.Now().Add(-50 * time.Millisecond)
-	jb.mu.Unlock()
-
-	// Push new frame 51 to trigger cleanup
-	jb.Push(stream.PacketHeader{FrameSeq: 51, PacketID: 0, TotalPackets: 1}, []byte("next"))
-
 	if tracker.unrecovered != 1 {
 		t.Fatalf("unrecovered got %d want 1", tracker.unrecovered)
 	}
